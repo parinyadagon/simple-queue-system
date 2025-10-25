@@ -1,0 +1,28 @@
+services:
+  redis:
+    image: redis:7-alpine
+    hostname: redis
+    ports:
+      - "6379:6379" # Expose to host for debugging
+    volumes:
+      - redis-data:/data
+    restart: always
+
+  # mysql:
+  #   image: mysql:8.0
+  #   hostname: mysql
+  #   ports:
+  #     - "3306:3306" # Expose to host for debugging
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: rootpassword # รหัสผ่าน Root
+  #     MYSQL_DATABASE: jobdb # ชื่อ DB ที่จะสร้าง
+  #     MYSQL_USER: jobuser # User ที่จะสร้าง
+  #     MYSQL_PASSWORD: jobpassword # รหัสผ่านของ User
+  #   volumes:
+  #     - mysql-data:/var/lib/mysql
+  #   restart: always
+
+volumes:
+  # Define the named volume for Redis persistence
+  redis-data:
+  # mysql-data: # <--- เพิ่ม Volume สำหรับ MySQL

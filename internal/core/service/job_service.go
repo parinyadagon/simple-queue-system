@@ -1,0 +1,84 @@
+package service
+
+import (
+	"context"
+	"simple-queue-103/internal/core/domain"
+	"simple-queue-103/internal/core/ports"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type jobService struct {
+	repo     ports.JobRepository
+	queue    ports.JobQueue
+	notifier ports.Notifier
+}
+
+func NewJobService(repo ports.JobRepository, queue ports.JobQueue, notifier ports.Notifier) ports.JobService {
+	return &jobService{
+		repo:     repo,
+		queue:    queue,
+		notifier: notifier,
+	}
+}
+
+func (s *jobService) CreateJob(fileName string) (*domain.Job, error) {
+	ctx := context.Background()
+	job := &domain.Job{
+		ID:        uuid.NewString(),
+		FileName:  fileName,
+		Status:    domain.StatusPending,
+		Progress:  0,
+		CreatedAt: time.Now(),
+	}
+
+	if err := s.repo.Save(ctx, job); err != nil {
+		return nil, err
+	}
+
+	// ส่งเข้า Queue เพื่อให้ Worker เริ่มทำงาน
+	if err := s.queue.EnqueueAnalysis(job.ID); err != nil {
+		return nil, err
+	}
+
+	s.notifier.BroadcastUpdate(job) // แจ้ง Client ว่ามี Job ใหม่
+
+	return job, nil
+}
+
+func (s *jobService) GetAllJobs() ([]*domain.Job, error) {
+	return s.repo.FindAll(context.Background())
+}
+
+func (s *jobService) GetJob(id string) (*domain.Job, error) {
+	return s.repo.FindByID(context.Background(), id)
+}
+
+func (s *jobService) ControlJob(id string, command string) error {
+	ctx := context.Background()
+	job, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	switch command {
+	case "PAUSE":
+		job.Status = domain.StatusPaused
+	case "RESTART": // (RESTART = PAUSE -> RUNNING)
+		job.Status = domain.StatusRunning
+	case "CANCEL":
+		job.Status = domain.StatusCanceled
+		/* if job.CancelFunc != nil {
+			job.CancelFunc() // เรียก context.CancelFunc()
+		} */
+	}
+
+	if err := s.repo.Save(ctx, job); err != nil {
+		return err
+	}
+
+	s.notifier.BroadcastUpdate(job) // แจ้ง Client ว่าสถานะเปลี่ยน
+
+	return nil
+}
