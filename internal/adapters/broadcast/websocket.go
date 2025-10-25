@@ -44,18 +44,36 @@ func (n *WebSocketNotifier) HandleWS(c *fiber.Ctx) error {
 // BroadcastUpdate (Implement ports.Notifier)
 func (n *WebSocketNotifier) BroadcastUpdate(job *domain.Job) {
 	n.RLock()
-	defer n.RUnlock()
-
+	// Create a copy of connections to avoid holding lock during write operations
+	connsCopy := make([]*websocket.Conn, 0, len(n.conns))
 	for conn := range n.conns {
+		connsCopy = append(connsCopy, conn)
+	}
+	n.RUnlock()
+
+	// Track connections that need to be removed
+	var connsToDelete []*websocket.Conn
+
+	// Write to connections without holding any locks
+	for _, conn := range connsCopy {
 		if err := conn.WriteJSON(job); err != nil {
 			log.Println("Write error:", err)
-			// (ตวรมี logic ลบ conn ที่ error ออก)
-			n.Lock()
-			delete(n.conns, conn)
-			n.Unlock()
-			conn.Close()
+			connsToDelete = append(connsToDelete, conn)
 
-			continue
+			// Close connection safely
+			if closeErr := conn.Close(); closeErr != nil {
+				log.Println("Error closing connection:", closeErr)
+			}
 		}
+	}
+
+	// Clean up failed connections
+	if len(connsToDelete) > 0 {
+		n.Lock()
+		for _, conn := range connsToDelete {
+			delete(n.conns, conn)
+		}
+		n.Unlock()
+		log.Printf("Cleaned up %d disconnected WebSocket clients.", len(connsToDelete))
 	}
 }

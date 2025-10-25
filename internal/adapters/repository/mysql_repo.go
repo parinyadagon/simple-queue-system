@@ -35,10 +35,11 @@ func NewSQLJobRepository(dataSourceName string) (ports.JobRepository, error) {
 // Save จะใช้ INSERT ... ON DUPLICATE KEY UPDATE (เรียกว่า "Upsert")
 func (r *mysqlJobRepository) Save(ctx context.Context, job *domain.Job) error {
 	query := `
-			INSERT INTO jobs (id, file_name, status, progress, created_at)
-			VALUES (:id, :file_name, :status, :progress, :created_at)
+			INSERT INTO jobs (id, file_name, status, progress, current_checkpoint, created_at)
+			VALUES (:id, :file_name, :status, :progress, :current_checkpoint, :created_at)
 			ON DUPLICATE KEY UPDATE
 					status = VALUES(status),
+					current_checkpoint = VALUES(current_checkpoint),
 					progress = VALUES(progress)
 	`
 	// db.NameExeContext ใชั struct filed (ที่ tag `db:"..."`)
