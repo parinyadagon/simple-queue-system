@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"simple-queue-103/internal/core/domain"
 	"simple-queue-103/internal/core/ports"
@@ -66,18 +67,37 @@ func NewTaskHandler(repo ports.JobRepository, notifier ports.Notifier) *TaskHand
 // HandleAnalysisTask คือ Worker ที่ทำงานจริง
 func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) error {
 	var payload map[string]string
-	json.Unmarshal(t.Payload(), &payload)
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("failed to unmarshal payload: %w", err)
+	}
 	jobID := payload["job_id"]
 
-	// สร้าง Ctx สำหรับ Cancel
-	jobCtx, cancel := context.WithCancel(context.Background())
+	// ใช้ context ที่ส่งมาจาก Asynq แทนการสร้างใหม่
+	// เพื่อให้สามารถ handle timeout และ cancellation ได้ถูกต้อง
+	// เพิ่ม timeout 30 นาที สำหรับงานที่ทำนานเกินไป
+	jobCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+
+	// เพิ่ม heartbeat เพื่อบอกว่างานยังทำงานอยู่
+	heartbeatTicker := time.NewTicker(1 * time.Minute)
+	defer heartbeatTicker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-heartbeatTicker.C:
+				log.Printf("Job %s heartbeat - still processing", jobID)
+			case <-jobCtx.Done():
+				return
+			}
+		}
+	}()
 
 	// --- 1. ตั้งค่าสถานะเริ่มต้นเป็น RUNNING ---
 	// (ใช้ 'initialJob' แค่ครั้งนี้ครั้งเดียว)
-	initialJob, err := h.repo.FindByID(ctx, jobID)
+	initialJob, err := h.repo.FindByID(jobCtx, jobID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to find job %s: %w", jobID, err)
 	}
 
 	// ถ้า Job ถูกสั่ง Cancel ก่อนที่จะเริ่มได้
@@ -87,6 +107,12 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 
 	startIndex := 0
 	if initialJob.CurrentCheckpoint != "" {
+		// ถ้า checkpoint เป็น "COMPLETED" แสดงว่างานเสร็จสิ้นแล้ว
+		if initialJob.CurrentCheckpoint == "COMPLETED" {
+			log.Printf("Job %s already completed. Skipping execution.", jobID)
+			return nil
+		}
+
 		// ถ้ามี Checkpoint เก่า ให้หา Index ของ Checkpoint นั้น
 		// และเริ่มทำต่อจาก *ขั้นตอนถัดไป* (+1)
 		if index, ok := StepIndexMap[initialJob.CurrentCheckpoint]; ok {
@@ -99,18 +125,25 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 	}
 
 	if startIndex >= len(JobSteps) {
-		log.Printf("Job %s already completed. Skipping retry.", jobID)
-
-		return nil
+		// ถ้า startIndex >= len(JobSteps) แสดงว่าทำ steps ครบแล้ว
+		// ต้องไปทำ completion step (set COMPLETED)
+		log.Printf("Job %s: All steps completed, proceeding to finalization.", jobID)
+		// ไม่ return nil ให้ไปทำ completion ต่อ
 	}
 
 	totalStep := len(JobSteps)
 
 	initialJob.Status = domain.StatusRunning
-	h.repo.Save(ctx, initialJob) // บันทึกว่าเริ่ม RUNNING
+	if err := h.repo.Save(jobCtx, initialJob); err != nil {
+		return fmt.Errorf("failed to save job status: %w", err)
+	}
 	h.notifier.BroadcastUpdate(initialJob)
 
-	log.Printf("Starting job: %s. Resuming from step: %s", jobID, JobSteps[startIndex])
+	if startIndex < len(JobSteps) {
+		log.Printf("Starting job: %s. Resuming from step: %s", jobID, JobSteps[startIndex])
+	} else {
+		log.Printf("Starting job: %s. All steps completed, finalizing...", jobID)
+	}
 
 	// --- 2. เริ่ม Loop การทำงานจากจุดที่ค้างไว้ (The Fix) ---
 	// วน Loop ด้วย index ตั้งแต่ startIndex จนถึงจำนวน Steps ทั้งหมด
@@ -119,10 +152,10 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 
 		// --- 2A. ดึงสถานะล่าสุด (Source of Truth) ---
 		// *ต้อง* ดึงใหม่ทุกครั้งที่เริ่ม Loop
-		currentJob, err := h.repo.FindByID(ctx, jobID)
+		currentJob, err := h.repo.FindByID(jobCtx, jobID)
 
 		if err != nil {
-			return err // Job หาย ?
+			return fmt.Errorf("failed to find job in processing loop: %w", err)
 		}
 
 		// สร้าง Loop ตรวจสอบสถานะ (สำหรับ Pause/Cancel)
@@ -141,9 +174,9 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 				return nil
 			case <-time.After(2 * time.Second):
 				// ครบ 2 วิ, ไปเช็ค DB ใหม่
-				currentJob, err = h.repo.FindByID(ctx, jobID)
+				currentJob, err = h.repo.FindByID(jobCtx, jobID)
 				if err != nil {
-					return err
+					return fmt.Errorf("failed to check job status during pause: %w", err)
 				}
 				// วนกลับไปเช็ค while loop (status == PAUSED or CANCELED)
 			}
@@ -164,9 +197,9 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 		time.Sleep(2 * time.Second) // <-- ‼️ นี่คือ "หน้าต่างเวลา" ของ Race Condition ‼️
 
 		// --- 2D. ตรวจสอบสถานะอีกครั้งหลังจากทำงานเสร็จ
-		jobAfterWork, err := h.repo.FindByID(ctx, jobID)
+		jobAfterWork, err := h.repo.FindByID(jobCtx, jobID)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to check job after work: %w", err)
 		}
 
 		// ถ้า User กด Pause/Cancel ระหว่างที่เรากำลัง Sleep 2 วิ
@@ -187,8 +220,9 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 		log.Printf("Job %s: Saving Checkpoint: %s", jobID, currentStepName)
 		jobAfterWork.CurrentCheckpoint = currentStepName
 		jobAfterWork.Progress = h.calculateProgress(currentStepName, totalStep)
-		if err := h.repo.Save(ctx, jobAfterWork); err != nil {
+		if err := h.repo.Save(jobCtx, jobAfterWork); err != nil {
 			log.Printf("Error saving job %s: %v", jobID, err)
+			return fmt.Errorf("failed to save checkpoint: %w", err)
 		}
 		h.notifier.BroadcastUpdate(jobAfterWork)
 	}
@@ -197,7 +231,11 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 	// (ตรรกะนี้กีต้องเช็ค Race Condition ด้วย)
 	log.Printf("Job %s COMPLETED:", jobID)
 
-	finalJob, _ := h.repo.FindByID(ctx, jobID)
+	finalJob, err := h.repo.FindByID(jobCtx, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to get final job state: %w", err)
+	}
+
 	// ถ้าถูสั่งให้ Pause/Cancel วินาทีก่อนที่จะ Complete?
 	if finalJob.Status != domain.StatusRunning {
 		log.Printf("Job %s was preempted before completion (Status: %s)", finalJob.FileName, finalJob.Status)
@@ -211,7 +249,9 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 	finalJob.CurrentCheckpoint = "COMPLETED"
 	finalJob.Status = domain.StatusCompleted
 	finalJob.Progress = 100
-	h.repo.Save(ctx, finalJob)
+	if err := h.repo.Save(jobCtx, finalJob); err != nil {
+		return fmt.Errorf("failed to save completed job: %w", err)
+	}
 	h.notifier.BroadcastUpdate(finalJob)
 
 	return nil
@@ -221,9 +261,23 @@ func (h *TaskHandler) calculateProgress(checkpoint string, totalStep int) int {
 	if checkpoint == "" {
 		return 0
 	}
+
+	// ถ้า checkpoint เป็น "COMPLETED" ให้ return 100%
+	if checkpoint == "COMPLETED" {
+		return 100
+	}
+
 	if index, ok := StepIndexMap[checkpoint]; ok {
-		// (index + 1) ตือจำนวน Step ที่เสร็จสิ้น
-		return ((index + 1) * 100) / totalStep
+		// คำนวณ progress โดยให้ step สุดท้ายได้แค่ 95%
+		// เฉพาะ "COMPLETED" เท่านั้นที่จะได้ 100%
+		stepProgress := ((index + 1) * 95) / totalStep
+
+		// ป้องกันไม่ให้เกิน 95% จนกว่าจะ COMPLETED จริงๆ
+		if stepProgress > 95 {
+			stepProgress = 95
+		}
+
+		return stepProgress
 	}
 
 	return 0

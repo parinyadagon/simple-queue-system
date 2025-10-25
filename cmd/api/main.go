@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"simple-queue-103/internal/adapters/broadcast"
@@ -56,12 +57,38 @@ func main() {
 	// Worker จะต้องใช้ Repo และ Notifier ตัวเดียวกับ API
 	asynqServer := asynq.NewServer(
 		asynq.RedisClientOpt{Addr: queue.RedisAddr},
-		asynq.Config{Concurrency: 10},
+		asynq.Config{
+			Concurrency: 10,
+			// เพิ่ม retry middleware และ error handling
+			ErrorHandler: asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+				log.Printf("Task failed: %s, Error: %v", task.Type(), err)
+			}),
+		},
 	)
 
 	taskHandler := queue.NewTaskHandler(jobRepo, notifier)
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(queue.TaskTypeAnalysis, taskHandler.HandleAnalysisTask)
+
+	// TODO: เพิ่ม Recovery goroutine สำหรับ Production environment
+	// สำหรับ Development - Asynq มี built-in retry เพียงพอแล้ว
+
+	// Uncomment สำหรับ Production:
+	/*
+		go func() {
+			time.Sleep(10 * time.Second) // รอให้ระบบ start ก่อน
+
+			// ทุกๆ 5 นาที ตรวจสอบงานที่ค้างอยู่ (ลด frequency)
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+
+			for range ticker.C {
+				if err := recoverStuckJobs(jobRepo, JobQueue, notifier); err != nil {
+					log.Printf("Error recovering stuck jobs: %v", err)
+				}
+			}
+		}()
+	*/
 
 	// --- 4. Initialize Fiber API (Server) ---
 	app := fiber.New()
