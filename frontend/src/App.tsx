@@ -9,7 +9,18 @@ interface Job {
   created_at: string;
 }
 
-// 2. Hook สำหรับ WebSocket
+// 2. Interface สำหรับ Job Statistics
+interface JobStats {
+  total: number;
+  pending: number;
+  running: number;
+  paused: number;
+  completed: number;
+  failed: number;
+  canceled: number;
+}
+
+// 3. Hook สำหรับ WebSocket
 function useJobSocket(onJobUpdate: (job: Job) => void) {
   useEffect(() => {
     // (ใช้ wss:// ถ้าเป็น production)
@@ -36,7 +47,36 @@ function useJobSocket(onJobUpdate: (job: Job) => void) {
 export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({}); // ใช้ Record/Object เพื่อ lookup O(1)
 
-  // 3. Callback ที่จะถูกเรียกโดย WebSocket
+  // 4. คำนวณ Statistics จาก jobs
+  const jobStats: JobStats = Object.values(jobs).reduce(
+    (stats, job) => {
+      stats.total++;
+      switch (job.status) {
+        case "PENDING":
+          stats.pending++;
+          break;
+        case "RUNNING":
+          stats.running++;
+          break;
+        case "PAUSED":
+          stats.paused++;
+          break;
+        case "COMPLETED":
+          stats.completed++;
+          break;
+        case "FAILED":
+          stats.failed++;
+          break;
+        case "CANCELED":
+          stats.canceled++;
+          break;
+      }
+      return stats;
+    },
+    { total: 0, pending: 0, running: 0, paused: 0, completed: 0, failed: 0, canceled: 0 }
+  );
+
+  // 5. Callback ที่จะถูกเรียกโดย WebSocket
   const handleJobUpdate = useCallback((updatedJob: Job) => {
     setJobs((currentJobs) => ({
       ...currentJobs,
@@ -44,10 +84,10 @@ export default function App() {
     }));
   }, []);
 
-  // 4. เชื่อมต่อ WebSocket
+  // 6. เชื่อมต่อ WebSocket
   useJobSocket(handleJobUpdate);
 
-  // 5. ดึงข้อมูล Job ทั้งหมดครั้งแรก
+  // 7. ดึงข้อมูล Job ทั้งหมดครั้งแรก
   useEffect(() => {
     fetch("http://localhost:8080/jobs")
       .then((res) => res.json())
@@ -60,7 +100,7 @@ export default function App() {
       });
   }, []);
 
-  // 6. ฟังก์ชันควบคุม
+  // 8. ฟังก์ชันควบคุม
   const createJob = () => {
     fetch("http://localhost:8080/jobs", { method: "POST" });
   };
@@ -77,7 +117,8 @@ export default function App() {
 
   return (
     <div className="bg-gray-900 text-white min-h-screen p-8">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-6xl mx-auto">
+        {/* Header */}
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-3xl font-bold">Job Processing Dashboard</h1>
           <button onClick={createJob} className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded">
@@ -85,20 +126,54 @@ export default function App() {
           </button>
         </div>
 
+        {/* Job Statistics Cards */}
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
+          <StatCard label="Total" count={jobStats.total} color="bg-gray-700" />
+          <StatCard label="Pending" count={jobStats.pending} color="bg-gray-600" />
+          <StatCard label="Running" count={jobStats.running} color="bg-blue-600" />
+          <StatCard label="Paused" count={jobStats.paused} color="bg-yellow-600" />
+          <StatCard label="Completed" count={jobStats.completed} color="bg-green-600" />
+          <StatCard label="Failed" count={jobStats.failed} color="bg-red-600" />
+          <StatCard label="Canceled" count={jobStats.canceled} color="bg-gray-500" />
+        </div>
+
+        {/* Job List */}
         <div className="bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-          <ul className="divide-y divide-gray-700">
-            {jobList.map((job) => (
-              <JobItem key={job.id} job={job} onControl={controlJob} />
-            ))}
-          </ul>
+          {jobList.length === 0 ? (
+            <div className="p-8 text-center text-gray-400">
+              <p className="text-lg">No jobs found</p>
+              <p className="text-sm mt-2">Click "Create New Job" to get started</p>
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-700">
+              {jobList.map((job) => (
+                <JobItem key={job.id} job={job} onControl={controlJob} />
+              ))}
+            </ul>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// --- Component ลูก (JobItem) ---
+// --- Statistics Card Component ---
+interface StatCardProps {
+  label: string;
+  count: number;
+  color: string;
+}
 
+function StatCard({ label, count, color }: StatCardProps) {
+  return (
+    <div className={`${color} rounded-lg p-4 text-center`}>
+      <div className="text-2xl font-bold text-white">{count}</div>
+      <div className="text-sm text-gray-200 uppercase tracking-wide">{label}</div>
+    </div>
+  );
+}
+
+// --- Component ลูก (JobItem) ---
 interface JobItemProps {
   job: Job;
   onControl: (id: string, command: "PAUSE" | "RESTART" | "CANCEL") => void;
