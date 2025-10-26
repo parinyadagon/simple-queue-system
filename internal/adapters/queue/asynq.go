@@ -219,7 +219,7 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 		// เรา *ไม่* บันทึก Progress ของ step นี้
 		log.Printf("Job %s: Saving Checkpoint: %s", jobID, currentStepName)
 		jobAfterWork.CurrentCheckpoint = currentStepName
-		jobAfterWork.Progress = h.calculateProgress(currentStepName, totalStep)
+		jobAfterWork.Progress = h.CalculateProgress(currentStepName, totalStep)
 		if err := h.repo.Save(jobCtx, jobAfterWork); err != nil {
 			log.Printf("Error saving job %s: %v", jobID, err)
 			return fmt.Errorf("failed to save checkpoint: %w", err)
@@ -257,7 +257,7 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 	return nil
 }
 
-func (h *TaskHandler) calculateProgress(checkpoint string, totalStep int) int {
+func (h *TaskHandler) CalculateProgress(checkpoint string, totalStep int) int {
 	if checkpoint == "" {
 		return 0
 	}
