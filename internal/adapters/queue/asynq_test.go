@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"simple-queue-103/internal/adapters/queue"
 	"simple-queue-103/internal/core/domain"
+	"simple-queue-103/internal/mocks"
 	"testing"
 	"time"
 
@@ -34,8 +35,8 @@ func createTestJob(id string, status domain.JobStatus, checkpoint string) *domai
 
 func TestHandleAnalysisTask_NewJob_CompletesAllSteps(t *testing.T) {
 	// Arrange
-	mockRepo := NewMockJobRepository()
-	mockNotifier := NewMockNotifier()
+	mockRepo := mocks.NewMockJobRepository()
+	mockNotifier := mocks.NewMockNotifier()
 	handler := queue.NewTaskHandler(mockRepo, mockNotifier)
 
 	jobID := "test-job-1"
@@ -87,8 +88,8 @@ func TestHandleAnalysisTask_NewJob_CompletesAllSteps(t *testing.T) {
 
 func TestHandleAnalysisTask_ResumeFromCheckpoint(t *testing.T) {
 	// Arrange
-	mockRepo := NewMockJobRepository()
-	mockNotifier := NewMockNotifier()
+	mockRepo := mocks.NewMockJobRepository()
+	mockNotifier := mocks.NewMockNotifier()
 	handler := queue.NewTaskHandler(mockRepo, mockNotifier)
 
 	jobID := "test-job-2"
@@ -123,8 +124,8 @@ func TestHandleAnalysisTask_ResumeFromCheckpoint(t *testing.T) {
 
 func TestHandleAnalysisTask_PauseResume_Workflow(t *testing.T) {
 	// Arrange
-	mockRepo := NewMockJobRepository()
-	mockNotifier := NewMockNotifier()
+	mockRepo := mocks.NewMockJobRepository()
+	mockNotifier := mocks.NewMockNotifier()
 	handler := queue.NewTaskHandler(mockRepo, mockNotifier)
 
 	jobID := "test-job-3"
@@ -180,8 +181,8 @@ func TestHandleAnalysisTask_PauseResume_Workflow(t *testing.T) {
 
 func TestHandleAnalysisTask_AlreadyCompleted_SkipsExecution(t *testing.T) {
 	// Arrange
-	mockRepo := NewMockJobRepository()
-	mockNotifier := NewMockNotifier()
+	mockRepo := mocks.NewMockJobRepository()
+	mockNotifier := mocks.NewMockNotifier()
 	handler := queue.NewTaskHandler(mockRepo, mockNotifier)
 
 	jobID := "test-job-4"
@@ -206,8 +207,8 @@ func TestHandleAnalysisTask_AlreadyCompleted_SkipsExecution(t *testing.T) {
 
 func TestHandleAnalysisTask_PreemptedDuringProcessing(t *testing.T) {
 	// Arrange
-	mockRepo := NewMockJobRepository()
-	mockNotifier := NewMockNotifier()
+	mockRepo := mocks.NewMockJobRepository()
+	mockNotifier := mocks.NewMockNotifier()
 	handler := queue.NewTaskHandler(mockRepo, mockNotifier)
 
 	jobID := "test-job-5"
@@ -258,8 +259,8 @@ func TestHandleAnalysisTask_Timeout_Integration(t *testing.T) {
 	}
 
 	// Arrange
-	mockRepo := NewMockJobRepository()
-	mockNotifier := NewMockNotifier()
+	mockRepo := mocks.NewMockJobRepository()
+	mockNotifier := mocks.NewMockNotifier()
 	handler := queue.NewTaskHandler(mockRepo, mockNotifier)
 
 	jobID := "timeout-job"

@@ -1,8 +1,10 @@
-package queue_test
+// Package mocks provides shared mock implementations for testing
+package mocks
 
 import (
 	"context"
 	"simple-queue-103/internal/core/domain"
+	"simple-queue-103/internal/core/ports"
 
 	"github.com/stretchr/testify/mock"
 )
@@ -11,6 +13,8 @@ import (
 type MockJobRepository struct {
 	mock.Mock
 }
+
+var _ ports.JobRepository = (*MockJobRepository)(nil) // Compile-time interface check
 
 func (m *MockJobRepository) Save(ctx context.Context, job *domain.Job) error {
 	args := m.Called(ctx, job)
@@ -30,38 +34,7 @@ func (m *MockJobRepository) FindAll(ctx context.Context) ([]*domain.Job, error) 
 	return args.Get(0).([]*domain.Job), args.Error(1)
 }
 
-// MockNotifier implements ports.Notifier for testing
-type MockNotifier struct {
-	mock.Mock
-	Updates []domain.Job // Track broadcast calls for verification
-}
-
-func (m *MockNotifier) BroadcastUpdate(job *domain.Job) {
-	m.Called(job)
-	m.Updates = append(m.Updates, *job)
-}
-
 // NewMockJobRepository creates a new mock repository instance
 func NewMockJobRepository() *MockJobRepository {
 	return new(MockJobRepository)
-}
-
-// NewMockNotifier creates a new mock notifier instance
-func NewMockNotifier() *MockNotifier {
-	return &MockNotifier{
-		Updates: make([]domain.Job, 0),
-	}
-}
-
-// ResetMocks resets all mock expectations and call history
-func ResetMocks(mocks ...interface{}) {
-	for _, m := range mocks {
-		if mockObj, ok := m.(*MockJobRepository); ok {
-			mockObj.Mock = mock.Mock{} // Reset the mock
-		}
-		if mockObj, ok := m.(*MockNotifier); ok {
-			mockObj.Mock = mock.Mock{}              // Reset the mock
-			mockObj.Updates = make([]domain.Job, 0) // Reset updates
-		}
-	}
 }
