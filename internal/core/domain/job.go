@@ -19,6 +19,7 @@ type Job struct {
 	Progress          int       `json:"progress" db:"progress"`
 	Status            JobStatus `json:"status" db:"status"`
 	CreatedAt         time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
 	CurrentCheckpoint string    `json:"current_checkpoint" db:"current_checkpoint"`
 	// ใช้ context สำหรับการ cancel
 	// CancelFunc func() `json:"-"`
