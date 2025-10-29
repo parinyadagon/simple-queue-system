@@ -296,7 +296,7 @@ function JobItem({ job, onControl, index }: JobItemProps) {
           )}
 
           {/* Enhanced Progress Bar */}
-          {(job.status === "RUNNING" || job.status === "COMPLETED") && (
+          {(job.status === "RUNNING" || job.status === "COMPLETED" || job.status === "PAUSED") && (
             <div className="space-y-2">
               <div className="flex justify-between items-center">
                 <span className="text-sm text-gray-400">Progress</span>
