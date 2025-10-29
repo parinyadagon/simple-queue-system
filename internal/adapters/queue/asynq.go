@@ -34,6 +34,46 @@ var JobSteps = []string{
 	"GENERATING_REPORT",
 }
 
+// Sub-checkpoints for each step to provide more granular progress tracking
+var SubCheckpoints = map[string][]string{
+	"DOWNLOAD_SOURCE": {
+		"DOWNLOAD_SOURCE_CONNECTING",
+		"DOWNLOAD_SOURCE_DOWNLOADING",
+		"DOWNLOAD_SOURCE_VALIDATING",
+		"DOWNLOAD_SOURCE_COMPLETED",
+	},
+	"DECOMPRESS_FILE": {
+		"DECOMPRESS_FILE_READING",
+		"DECOMPRESS_FILE_EXTRACTING",
+		"DECOMPRESS_FILE_VERIFYING",
+		"DECOMPRESS_FILE_COMPLETED",
+	},
+	"CLEANING_DATA": {
+		"CLEANING_DATA_SCANNING",
+		"CLEANING_DATA_FILTERING",
+		"CLEANING_DATA_NORMALIZING",
+		"CLEANING_DATA_COMPLETED",
+	},
+	"ANALYSIS_MODEL_A": {
+		"ANALYSIS_MODEL_A_LOADING",
+		"ANALYSIS_MODEL_A_PROCESSING",
+		"ANALYSIS_MODEL_A_CALCULATING",
+		"ANALYSIS_MODEL_A_COMPLETED",
+	},
+	"ANALYSIS_MODEL_B": {
+		"ANALYSIS_MODEL_B_LOADING",
+		"ANALYSIS_MODEL_B_PROCESSING",
+		"ANALYSIS_MODEL_B_CALCULATING",
+		"ANALYSIS_MODEL_B_COMPLETED",
+	},
+	"GENERATING_REPORT": {
+		"GENERATING_REPORT_COLLECTING",
+		"GENERATING_REPORT_FORMATTING",
+		"GENERATING_REPORT_FINALIZING",
+		"GENERATING_REPORT_COMPLETED",
+	},
+}
+
 var StepIndexMap = func() map[string]int {
 	m := make(map[string]int)
 	for i, step := range JobSteps {
@@ -42,6 +82,168 @@ var StepIndexMap = func() map[string]int {
 
 	return m
 }()
+
+// StepFunction defines the signature for step processing functions
+type StepFunction func(h *TaskHandler, ctx context.Context, jobID string) error
+
+// getStepExecutor returns the appropriate step function for the given step name
+func getStepExecutor(stepName string) StepFunction {
+	switch stepName {
+	case "DOWNLOAD_SOURCE":
+		return (*TaskHandler).executeDownloadSource
+	case "DECOMPRESS_FILE":
+		return (*TaskHandler).executeDecompressFile
+	case "CLEANING_DATA":
+		return (*TaskHandler).executeCleaningData
+	case "ANALYSIS_MODEL_A":
+		return (*TaskHandler).executeAnalysisModelA
+	case "ANALYSIS_MODEL_B":
+		return (*TaskHandler).executeAnalysisModelB
+	case "GENERATING_REPORT":
+		return (*TaskHandler).executeGeneratingReport
+	default:
+		return nil
+	}
+}
+
+// saveSubCheckpoint saves a sub-checkpoint and calculates detailed progress
+func (h *TaskHandler) saveSubCheckpoint(ctx context.Context, jobID string, mainStep string, subCheckpoint string) error {
+	job, err := h.repo.FindByID(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to find job for sub-checkpoint update: %w", err)
+	}
+
+	// Check if job was cancelled/paused during processing
+	if job.Status != domain.StatusRunning {
+		log.Printf("Job %s was preempted, skipping sub-checkpoint %s", jobID, subCheckpoint)
+		return nil
+	}
+
+	log.Printf("Job %s: Sub-checkpoint: %s", jobID, subCheckpoint)
+	job.CurrentCheckpoint = subCheckpoint
+	job.Progress = h.calculateDetailedProgress(mainStep, subCheckpoint)
+
+	if err := h.repo.Save(ctx, job); err != nil {
+		log.Printf("Error saving sub-checkpoint for job %s: %v", jobID, err)
+		return fmt.Errorf("failed to save sub-checkpoint: %w", err)
+	}
+
+	h.notifier.BroadcastUpdate(job)
+	return nil
+}
+
+// findSubCheckpointStartIndex finds where to resume within sub-checkpoints
+func (h *TaskHandler) findSubCheckpointStartIndex(currentCheckpoint string, subSteps []string) int {
+	if currentCheckpoint == "" {
+		return 0
+	}
+
+	// Find the index of current sub-checkpoint
+	for i, subStep := range subSteps {
+		if subStep == currentCheckpoint {
+			// Resume from the next sub-step
+			return i + 1
+		}
+	}
+
+	// If not found in sub-steps, start from beginning
+	return 0
+}
+
+// executeStepWithSubCheckpoints executes a step with multiple sub-checkpoints
+func (h *TaskHandler) executeStepWithSubCheckpoints(ctx context.Context, jobID string, stepName string, subStepActions []func()) error {
+	subSteps := SubCheckpoints[stepName]
+
+	job, err := h.repo.FindByID(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to find job: %w", err)
+	}
+
+	startSubIndex := h.findSubCheckpointStartIndex(job.CurrentCheckpoint, subSteps)
+
+	for i, action := range subStepActions {
+		if startSubIndex <= i {
+			// Save sub-checkpoint
+			if err := h.saveSubCheckpoint(ctx, jobID, stepName, subSteps[i]); err != nil {
+				return err
+			}
+
+			// Execute the action
+			action()
+		}
+	}
+
+	return nil
+}
+
+// calculateDetailedProgress calculates progress including sub-checkpoints
+func (h *TaskHandler) calculateDetailedProgress(mainStep string, subCheckpoint string) int {
+	if subCheckpoint == CompletedCheckpoint {
+		return 100
+	}
+
+	// Find main step index
+	mainStepIndex, exists := StepIndexMap[mainStep]
+	if !exists {
+		// Check if this is already a sub-checkpoint
+		for step, subSteps := range SubCheckpoints {
+			for subIndex, sub := range subSteps {
+				if sub == subCheckpoint {
+					if step == subCheckpoint[:len(step)] { // Match main step name prefix
+						mainStepIndex = StepIndexMap[step]
+						subStepProgress := float64(subIndex+1) / float64(len(subSteps))
+						totalSteps := len(JobSteps)
+
+						// Calculate progress: main step progress + sub-step progress within that step
+						stepWeight := float64(MaxProgressBeforeComplete) / float64(totalSteps)
+						mainStepProgress := float64(mainStepIndex) * stepWeight
+						currentStepProgress := stepWeight * subStepProgress
+
+						finalProgress := int(mainStepProgress + currentStepProgress)
+						if finalProgress > MaxProgressBeforeComplete {
+							finalProgress = MaxProgressBeforeComplete
+						}
+						return finalProgress
+					}
+				}
+			}
+		}
+		return 0
+	}
+
+	// Find sub-checkpoint index within the main step
+	subSteps, exists := SubCheckpoints[mainStep]
+	if !exists {
+		// Fallback to original calculation
+		return h.CalculateProgress(mainStep, len(JobSteps))
+	}
+
+	subStepIndex := -1
+	for i, sub := range subSteps {
+		if sub == subCheckpoint {
+			subStepIndex = i
+			break
+		}
+	}
+
+	if subStepIndex == -1 {
+		// Fallback to original calculation
+		return h.CalculateProgress(mainStep, len(JobSteps))
+	}
+
+	// Calculate detailed progress
+	totalSteps := len(JobSteps)
+	stepWeight := float64(MaxProgressBeforeComplete) / float64(totalSteps)
+	mainStepProgress := float64(mainStepIndex) * stepWeight
+	subStepProgress := stepWeight * (float64(subStepIndex+1) / float64(len(subSteps)))
+
+	finalProgress := int(mainStepProgress + subStepProgress)
+	if finalProgress > MaxProgressBeforeComplete {
+		finalProgress = MaxProgressBeforeComplete
+	}
+
+	return finalProgress
+}
 
 // --- 1. Asynq Client (Implement JobQueue) ---
 type asynqJobQueue struct {
@@ -70,6 +272,151 @@ type TaskHandler struct {
 
 func NewTaskHandler(repo ports.JobRepository, notifier ports.Notifier) *TaskHandler {
 	return &TaskHandler{repo: repo, notifier: notifier}
+}
+
+// Step execution functions - each step simulates specific work with sub-checkpoints
+func (h *TaskHandler) executeDownloadSource(ctx context.Context, jobID string) error {
+	stepName := "DOWNLOAD_SOURCE"
+
+	actions := []func(){
+		func() {
+			log.Printf("Job %s: Connecting to remote source...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Downloading files...", jobID)
+			time.Sleep(StepProcessingTime)
+		},
+		func() {
+			log.Printf("Job %s: Validating downloaded files...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Source files downloaded successfully", jobID)
+		},
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
+}
+
+func (h *TaskHandler) executeDecompressFile(ctx context.Context, jobID string) error {
+	stepName := "DECOMPRESS_FILE"
+
+	actions := []func(){
+		func() {
+			log.Printf("Job %s: Reading compressed files...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Extracting files...", jobID)
+			time.Sleep(StepProcessingTime)
+		},
+		func() {
+			log.Printf("Job %s: Verifying extracted files...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Files decompressed successfully", jobID)
+		},
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
+}
+
+func (h *TaskHandler) executeCleaningData(ctx context.Context, jobID string) error {
+	stepName := "CLEANING_DATA"
+
+	actions := []func(){
+		func() {
+			log.Printf("Job %s: Scanning data for inconsistencies...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Filtering invalid data...", jobID)
+			time.Sleep(StepProcessingTime)
+		},
+		func() {
+			log.Printf("Job %s: Normalizing data format...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Data cleaning completed", jobID)
+		},
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
+}
+
+func (h *TaskHandler) executeAnalysisModelA(ctx context.Context, jobID string) error {
+	stepName := "ANALYSIS_MODEL_A"
+
+	actions := []func(){
+		func() {
+			log.Printf("Job %s: Loading Analysis Model A...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Processing data with Model A...", jobID)
+			time.Sleep(StepProcessingTime)
+		},
+		func() {
+			log.Printf("Job %s: Calculating results for Model A...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Analysis Model A completed", jobID)
+		},
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
+}
+
+func (h *TaskHandler) executeAnalysisModelB(ctx context.Context, jobID string) error {
+	stepName := "ANALYSIS_MODEL_B"
+
+	actions := []func(){
+		func() {
+			log.Printf("Job %s: Loading Analysis Model B...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Processing data with Model B...", jobID)
+			time.Sleep(StepProcessingTime)
+		},
+		func() {
+			log.Printf("Job %s: Calculating results for Model B...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Analysis Model B completed", jobID)
+		},
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
+}
+
+func (h *TaskHandler) executeGeneratingReport(ctx context.Context, jobID string) error {
+	stepName := "GENERATING_REPORT"
+
+	actions := []func(){
+		func() {
+			log.Printf("Job %s: Collecting analysis results...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Formatting report data...", jobID)
+			time.Sleep(StepProcessingTime)
+		},
+		func() {
+			log.Printf("Job %s: Finalizing report layout...", jobID)
+			time.Sleep(StepProcessingTime / 2)
+		},
+		func() {
+			log.Printf("Job %s: Report generated successfully", jobID)
+		},
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
 }
 
 // HandleAnalysisTask คือ Worker ที่ทำงานจริง
@@ -170,12 +517,31 @@ func (h *TaskHandler) determineStartIndex(job *domain.Job, jobID string) int {
 		return -1
 	}
 
+	// Check for main step checkpoint
 	if index, ok := StepIndexMap[job.CurrentCheckpoint]; ok {
 		return index + 1
 	}
 
-	log.Printf("Warning: job %s has unknown checkpoint: %s. Starting from beginning.", jobID, job.CurrentCheckpoint)
+	// Check for sub-checkpoint - find which main step it belongs to
+	for mainStep, subSteps := range SubCheckpoints {
+		for subIndex, subCheckpoint := range subSteps {
+			if subCheckpoint == job.CurrentCheckpoint {
+				mainStepIndex := StepIndexMap[mainStep]
 
+				// If it's the last sub-checkpoint of a step, move to next main step
+				if subIndex == len(subSteps)-1 {
+					log.Printf("Job %s: Resuming from next step after completing %s", jobID, mainStep)
+					return mainStepIndex + 1
+				}
+
+				// Otherwise, resume the current main step (it will handle sub-checkpoint internally)
+				log.Printf("Job %s: Resuming %s from sub-checkpoint %s", jobID, mainStep, job.CurrentCheckpoint)
+				return mainStepIndex
+			}
+		}
+	}
+
+	log.Printf("Warning: job %s has unknown checkpoint: %s. Starting from beginning.", jobID, job.CurrentCheckpoint)
 	return 0
 }
 
@@ -226,9 +592,17 @@ func (h *TaskHandler) processJobSteps(ctx context.Context, jobID string, startIn
 			// Continue processing
 		}
 
-		// Simulate work processing
-		log.Printf("Job %s: Running task: %s", jobID, currentStepName)
-		time.Sleep(StepProcessingTime)
+		// Execute specific step function
+		stepExecutor := getStepExecutor(currentStepName)
+		if stepExecutor == nil {
+			log.Printf("Job %s: Unknown step %s, using default processing", jobID, currentStepName)
+			log.Printf("Job %s: Running task: %s", jobID, currentStepName)
+			time.Sleep(StepProcessingTime)
+		} else {
+			if err := stepExecutor(h, ctx, jobID); err != nil {
+				return fmt.Errorf("failed to execute step %s: %w", currentStepName, err)
+			}
+		}
 
 		// Check if job was preempted during processing
 		if shouldSkipProgress, err := h.checkJobPreemption(ctx, jobID, i, cancel); err != nil {
