@@ -106,6 +106,7 @@ func createJobsTable(db *sql.DB) error {
 		status ENUM('PENDING', 'RUNNING', 'PAUSED', 'CANCELED', 'COMPLETED') NOT NULL DEFAULT 'PENDING',
 		progress INT DEFAULT 0,
 		current_checkpoint VARCHAR(255) DEFAULT '',
+		current_step_name VARCHAR(500) DEFAULT '',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 	);`

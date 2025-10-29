@@ -21,6 +21,7 @@ type Job struct {
 	CreatedAt         time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
 	CurrentCheckpoint string    `json:"current_checkpoint" db:"current_checkpoint"`
+	CurrentStepName   string    `json:"current_step_name" db:"current_step_name"`
 	// ใช้ context สำหรับการ cancel
 	// CancelFunc func() `json:"-"`
 }

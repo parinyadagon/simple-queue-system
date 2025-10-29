@@ -74,6 +74,56 @@ var SubCheckpoints = map[string][]string{
 	},
 }
 
+// Human-readable step descriptions for UI display
+var StepDescriptions = map[string]string{
+	// Main steps
+	"DOWNLOAD_SOURCE":   "กำลังดาวน์โหลดไฟล์ต้นฉบับ",
+	"DECOMPRESS_FILE":   "กำลังแตกไฟล์ข้อมูล",
+	"CLEANING_DATA":     "กำลังทำความสะอาดข้อมูล",
+	"ANALYSIS_MODEL_A":  "กำลังวิเคราะห์ด้วยโมเดล A",
+	"ANALYSIS_MODEL_B":  "กำลังวิเคราะห์ด้วยโมเดล B",
+	"GENERATING_REPORT": "กำลังสร้างรายงาน",
+
+	// Download source sub-steps
+	"DOWNLOAD_SOURCE_CONNECTING":  "กำลังเชื่อมต่อกับเซิร์ฟเวอร์",
+	"DOWNLOAD_SOURCE_DOWNLOADING": "กำลังดาวน์โหลดไฟล์",
+	"DOWNLOAD_SOURCE_VALIDATING":  "กำลังตรวจสอบไฟล์ที่ดาวน์โหลด",
+	"DOWNLOAD_SOURCE_COMPLETED":   "ดาวน์โหลดไฟล์เสร็จสิ้น",
+
+	// Decompress file sub-steps
+	"DECOMPRESS_FILE_READING":    "กำลังอ่านไฟล์บีบอัด",
+	"DECOMPRESS_FILE_EXTRACTING": "กำลังแตกไฟล์",
+	"DECOMPRESS_FILE_VERIFYING":  "กำลังตรวจสอบไฟล์ที่แตก",
+	"DECOMPRESS_FILE_COMPLETED":  "แตกไฟล์เสร็จสิ้น",
+
+	// Cleaning data sub-steps
+	"CLEANING_DATA_SCANNING":    "กำลังสแกนหาข้อมูลที่ผิดปกติ",
+	"CLEANING_DATA_FILTERING":   "กำลังกรองข้อมูลที่ไม่ถูกต้อง",
+	"CLEANING_DATA_NORMALIZING": "กำลังปรับรูปแบบข้อมูล",
+	"CLEANING_DATA_COMPLETED":   "ทำความสะอาดข้อมูลเสร็จสิ้น",
+
+	// Analysis Model A sub-steps
+	"ANALYSIS_MODEL_A_LOADING":     "กำลังโหลดโมเดลวิเคราะห์ A",
+	"ANALYSIS_MODEL_A_PROCESSING":  "กำลังประมวลผลด้วยโมเดล A",
+	"ANALYSIS_MODEL_A_CALCULATING": "กำลังคำนวณผลลัพธ์โมเดล A",
+	"ANALYSIS_MODEL_A_COMPLETED":   "วิเคราะห์ด้วยโมเดล A เสร็จสิ้น",
+
+	// Analysis Model B sub-steps
+	"ANALYSIS_MODEL_B_LOADING":     "กำลังโหลดโมเดลวิเคราะห์ B",
+	"ANALYSIS_MODEL_B_PROCESSING":  "กำลังประมวลผลด้วยโมเดล B",
+	"ANALYSIS_MODEL_B_CALCULATING": "กำลังคำนวณผลลัพธ์โมเดล B",
+	"ANALYSIS_MODEL_B_COMPLETED":   "วิเคราะห์ด้วยโมเดล B เสร็จสิ้น",
+
+	// Generating report sub-steps
+	"GENERATING_REPORT_COLLECTING": "กำลังรวบรวมผลการวิเคราะห์",
+	"GENERATING_REPORT_FORMATTING": "กำลังจัดรูปแบบรายงาน",
+	"GENERATING_REPORT_FINALIZING": "กำลังจัดเรียงรายงานขั้นสุดท้าย",
+	"GENERATING_REPORT_COMPLETED":  "สร้างรายงานเสร็จสิ้น",
+
+	// Special states
+	"COMPLETED": "งานเสร็จสิ้นแล้ว",
+}
+
 var StepIndexMap = func() map[string]int {
 	m := make(map[string]int)
 	for i, step := range JobSteps {
@@ -119,8 +169,15 @@ func (h *TaskHandler) saveSubCheckpoint(ctx context.Context, jobID string, mainS
 		return nil
 	}
 
-	log.Printf("Job %s: Sub-checkpoint: %s", jobID, subCheckpoint)
+	// Get human-readable step description
+	stepDescription, exists := StepDescriptions[subCheckpoint]
+	if !exists {
+		stepDescription = subCheckpoint // Fallback to checkpoint name
+	}
+
+	log.Printf("Job %s: Sub-checkpoint: %s (%s)", jobID, subCheckpoint, stepDescription)
 	job.CurrentCheckpoint = subCheckpoint
+	job.CurrentStepName = stepDescription
 	job.Progress = h.calculateDetailedProgress(mainStep, subCheckpoint)
 
 	if err := h.repo.Save(ctx, job); err != nil {
@@ -673,8 +730,15 @@ func (h *TaskHandler) saveStepProgress(ctx context.Context, jobID string, stepNa
 		return fmt.Errorf("failed to find job for progress update: %w", err)
 	}
 
-	log.Printf("Job %s: Saving Checkpoint: %s", jobID, stepName)
+	// Get human-readable step description
+	stepDescription, exists := StepDescriptions[stepName]
+	if !exists {
+		stepDescription = stepName // Fallback to step name
+	}
+
+	log.Printf("Job %s: Saving Checkpoint: %s (%s)", jobID, stepName, stepDescription)
 	job.CurrentCheckpoint = stepName
+	job.CurrentStepName = stepDescription
 	job.Progress = h.CalculateProgress(stepName, totalSteps)
 
 	if err := h.repo.Save(ctx, job); err != nil {
@@ -707,6 +771,7 @@ func (h *TaskHandler) completedJob(ctx context.Context, jobID string, cancel con
 
 	// Mark job as completed
 	finalJob.CurrentCheckpoint = CompletedCheckpoint
+	finalJob.CurrentStepName = StepDescriptions["COMPLETED"]
 	finalJob.Status = domain.StatusCompleted
 	finalJob.Progress = 100
 

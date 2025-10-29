@@ -7,6 +7,7 @@ interface Job {
   status: "PENDING" | "RUNNING" | "PAUSED" | "FAILED" | "CANCELED" | "COMPLETED";
   progress: number;
   created_at: string;
+  current_step_name?: string;
 }
 
 // 2. Interface สำหรับ Job Statistics
@@ -48,7 +49,7 @@ export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({}); // ใช้ Record/Object เพื่อ lookup O(1)
 
   // 4. คำนวณ Statistics จาก jobs
-  const jobStats: JobStats = Object.values(jobs).reduce(
+  const jobStats: JobStats = (jobs ? Object.values(jobs) : []).reduce(
     (stats, job) => {
       stats.total++;
       switch (job.status) {
@@ -91,12 +92,20 @@ export default function App() {
   useEffect(() => {
     fetch("http://localhost:8080/jobs")
       .then((res) => res.json())
-      .then((initialJobs: Job[]) => {
-        const jobsMap = initialJobs.reduce((acc, job) => {
-          acc[job.id] = job;
-          return acc;
-        }, {} as Record<string, Job>);
-        setJobs(jobsMap);
+      .then((initialJobs: Job[] | null) => {
+        if (initialJobs && Array.isArray(initialJobs)) {
+          const jobsMap = initialJobs.reduce((acc, job) => {
+            acc[job.id] = job;
+            return acc;
+          }, {} as Record<string, Job>);
+          setJobs(jobsMap);
+        } else {
+          setJobs({});
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to fetch jobs:", error);
+        setJobs({});
       });
   }, []);
 
@@ -113,7 +122,7 @@ export default function App() {
     });
   };
 
-  const jobList = Object.values(jobs).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const jobList = (jobs ? Object.values(jobs) : []).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
   return (
     <div className="bg-gray-900 text-white min-h-screen p-8">
@@ -206,10 +215,14 @@ function JobItem({ job, onControl }: JobItemProps) {
         </div>
         <div className="text-lg text-gray-200">{job.file_name}</div>
 
+        {/* Current Step Name */}
+        {job.current_step_name && <div className="text-sm text-blue-300 mt-1">{job.current_step_name}</div>}
+
         {/* Progress Bar */}
         {(job.status === "RUNNING" || job.status === "COMPLETED") && (
           <div className="w-full bg-gray-700 rounded-full h-2.5 mt-2">
             <div className="bg-blue-500 h-2.5 rounded-full" style={{ width: `${job.progress}%`, transition: "width 0.3s" }}></div>
+            <div className="text-xs text-gray-400 mt-1 text-right">{job.progress}%</div>
           </div>
         )}
       </div>
