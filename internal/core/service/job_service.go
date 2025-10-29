@@ -65,8 +65,12 @@ func (s *jobService) ControlJob(id string, command string) error {
 	switch command {
 	case "PAUSE":
 		job.Status = domain.StatusPaused
-	case "RESTART": // (RESTART = PAUSE -> RUNNING)
+	case "RESTART": // (RESTART = PAUSE -> RUNNING with forced re-enqueue)
 		job.Status = domain.StatusRunning
+		// บังคับ enqueue job กลับเข้า queue อีกครั้งเพื่อให้ worker ทำงานต่อ
+		if err := s.queue.EnqueueAnalysis(job.ID); err != nil {
+			return err
+		}
 	case "CANCEL":
 		job.Status = domain.StatusCanceled
 		/* if job.CancelFunc != nil {

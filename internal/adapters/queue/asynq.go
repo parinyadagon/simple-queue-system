@@ -497,6 +497,12 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 		return nil
 	}
 
+	// Handle paused jobs - they should be skipped until explicitly resumed
+	if initialJob.Status == domain.StatusPaused {
+		log.Printf("Job %s is PAUSED, skipping execution until resumed", jobID)
+		return nil
+	}
+
 	startIndex := h.determineStartIndex(initialJob, jobID)
 
 	// If job is already completed, skip all processing
@@ -681,26 +687,16 @@ func (h *TaskHandler) processJobSteps(ctx context.Context, jobID string, startIn
 }
 
 func (h *TaskHandler) handleJobStateChanges(ctx context.Context, jobID string, job *domain.Job, cancel context.CancelFunc) error {
-	for job.Status == domain.StatusPaused || job.Status == domain.StatusCanceled {
-		if job.Status == domain.StatusCanceled {
-			log.Printf("Job%s CANCELED (at start of loop)", jobID)
-			cancel()
-			return nil
-		}
+	if job.Status == domain.StatusCanceled {
+		log.Printf("Job %s CANCELED", jobID)
+		cancel()
+		return nil
+	}
 
-		// Job is paused, wait and recheck
-		log.Printf("Job %s PAUSED, waiting...", jobID)
-
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(StatusCheckInterval):
-			var err error
-			job, err = h.repo.FindByID(ctx, jobID)
-			if err != nil {
-				return fmt.Errorf("failed to check job status during pause: %w", err)
-			}
-		}
+	if job.Status == domain.StatusPaused {
+		log.Printf("Job %s PAUSED - task will exit and wait for resume", jobID)
+		// Save current state and exit task - let resume create new task
+		return fmt.Errorf("job paused - task exiting to allow resume")
 	}
 
 	return nil
