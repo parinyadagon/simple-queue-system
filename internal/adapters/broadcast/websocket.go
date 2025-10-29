@@ -11,7 +11,8 @@ import (
 
 type WebSocketNotifier struct {
 	sync.RWMutex
-	conns map[*websocket.Conn]bool
+	conns          map[*websocket.Conn]bool
+	broadcastMutex sync.Mutex // Prevent concurrent broadcasts
 }
 
 func NewWebSocketNotifier() *WebSocketNotifier {
@@ -43,6 +44,10 @@ func (n *WebSocketNotifier) HandleWS(c *fiber.Ctx) error {
 
 // BroadcastUpdate (Implement ports.Notifier)
 func (n *WebSocketNotifier) BroadcastUpdate(job *domain.Job) {
+	// Prevent concurrent broadcasts to avoid "concurrent write to websocket connection"
+	n.broadcastMutex.Lock()
+	defer n.broadcastMutex.Unlock()
+
 	n.RLock()
 	// Create a copy of connections to avoid holding lock during write operations
 	connsCopy := make([]*websocket.Conn, 0, len(n.conns))

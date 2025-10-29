@@ -26,12 +26,10 @@ func main() {
 	// --- 1. Initialize Adapters (Singletons) ---
 
 	// Use in-memory repository for testing
-	// jobRepo := repository.NewInMemoryJobRepository()
-
 	notifier := broadcast.NewWebSocketNotifier()
 	JobQueue := queue.NewAsynqJobQueue()
 
-	//MySQL repository for production
+	// MySQL repository for production
 	mysqlDSN := os.Getenv("MYSQL_DSN")
 	if mysqlDSN == "" {
 		log.Fatal("MYSQL_DSN environment variable is not set")

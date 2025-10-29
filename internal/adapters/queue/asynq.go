@@ -487,7 +487,9 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 
 	initialJob, err := h.initializeJob(ctx, jobID)
 	if err != nil {
-		return err
+		// If job doesn't exist, it's likely from previous session - just skip
+		log.Printf("Skipping job %s as it doesn't exist in current session", jobID)
+		return nil
 	}
 
 	// Skip if job is already canceled or completed
@@ -557,6 +559,7 @@ func (h *TaskHandler) setupJobContext(ctx context.Context, jobID string) (contex
 func (h *TaskHandler) initializeJob(ctx context.Context, jobID string) (*domain.Job, error) {
 	job, err := h.repo.FindByID(ctx, jobID)
 	if err != nil {
+		log.Printf("Job %s not found in repository (probably from previous session): %v", jobID, err)
 		return nil, fmt.Errorf("failed to find job %s: %w", jobID, err)
 	}
 
