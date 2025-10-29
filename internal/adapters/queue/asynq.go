@@ -15,6 +15,14 @@ import (
 const (
 	TaskTypeAnalysis = "task:analysis"
 	RedisAddr        = "127.0.0.1:6379"
+
+	// Job processing constants
+	JobTimeout                = 30 * time.Minute
+	HeartbeatInterval         = 1 * time.Minute
+	StatusCheckInterval       = 2 * time.Second
+	StepProcessingTime        = 2 * time.Second
+	CompletedCheckpoint       = "COMPLETED"
+	MaxProgressBeforeComplete = 95
 )
 
 var JobSteps = []string{
@@ -66,23 +74,68 @@ func NewTaskHandler(repo ports.JobRepository, notifier ports.Notifier) *TaskHand
 
 // HandleAnalysisTask คือ Worker ที่ทำงานจริง
 func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) error {
+	jobID, err := h.extractJobID(t)
+	if err != nil {
+		return err
+	}
+
+	jobCtx, cancel := h.setupJobContext(ctx, jobID)
+
+	initialJob, err := h.initializeJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+
+	// Skip if job is already canceled or completed
+	if initialJob.Status == domain.StatusCanceled {
+		return nil
+	}
+
+	startIndex := h.determineStartIndex(initialJob, jobID)
+
+	// If job is already completed, skip all processing
+	if startIndex == -1 {
+		return nil
+	}
+
+	if startIndex >= len(JobSteps) {
+		log.Printf("Job %s: All steps completed, proceeding to finalization.", jobID)
+	}
+
+	// Set job to running status
+	if err := h.setJobRunning(jobCtx, initialJob); err != nil {
+		return err
+	}
+
+	h.logJobStart(jobID, startIndex)
+
+	// Process remaining steps
+	if err := h.processJobSteps(jobCtx, jobID, startIndex, cancel); err != nil {
+		return err
+	}
+
+	// Complete the job
+	return h.completedJob(jobCtx, jobID, cancel)
+}
+
+// extractJobID extracts job ID from task payload
+func (h *TaskHandler) extractJobID(t *asynq.Task) (string, error) {
 	var payload map[string]string
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
-		return fmt.Errorf("failed to unmarshal payload: %w", err)
+		return "", fmt.Errorf("failed to unmarshal payload: %w", err)
 	}
-	jobID := payload["job_id"]
 
-	// ใช้ context ที่ส่งมาจาก Asynq แทนการสร้างใหม่
-	// เพื่อให้สามารถ handle timeout และ cancellation ได้ถูกต้อง
-	// เพิ่ม timeout 30 นาที สำหรับงานที่ทำนานเกินไป
-	jobCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
+	return payload["job_id"], nil
+}
 
-	// เพิ่ม heartbeat เพื่อบอกว่างานยังทำงานอยู่
-	heartbeatTicker := time.NewTicker(1 * time.Minute)
-	defer heartbeatTicker.Stop()
+// setupJobContext creates job context with timeout and heartbeat
+func (h *TaskHandler) setupJobContext(ctx context.Context, jobID string) (context.Context, context.CancelFunc) {
+	jobCtx, cancel := context.WithTimeout(ctx, JobTimeout)
 
+	// Start heartbeat goroutine
+	heartbeatTicker := time.NewTicker(HeartbeatInterval)
 	go func() {
+		defer heartbeatTicker.Stop()
 		for {
 			select {
 			case <-heartbeatTicker.C:
@@ -93,167 +146,201 @@ func (h *TaskHandler) HandleAnalysisTask(ctx context.Context, t *asynq.Task) err
 		}
 	}()
 
-	// --- 1. ตั้งค่าสถานะเริ่มต้นเป็น RUNNING ---
-	// (ใช้ 'initialJob' แค่ครั้งนี้ครั้งเดียว)
-	initialJob, err := h.repo.FindByID(jobCtx, jobID)
+	return jobCtx, cancel
+}
+
+// initializeJob retrieves and validates initial job state
+func (h *TaskHandler) initializeJob(ctx context.Context, jobID string) (*domain.Job, error) {
+	job, err := h.repo.FindByID(ctx, jobID)
 	if err != nil {
-		return fmt.Errorf("failed to find job %s: %w", jobID, err)
+		return nil, fmt.Errorf("failed to find job %s: %w", jobID, err)
 	}
 
-	// ถ้า Job ถูกสั่ง Cancel ก่อนที่จะเริ่มได้
-	if initialJob.Status == domain.StatusCanceled {
-		return nil
+	return job, nil
+}
+
+// determineStartIndex calculates where to resume job processing
+func (h *TaskHandler) determineStartIndex(job *domain.Job, jobID string) int {
+	if job.CurrentCheckpoint == "" {
+		return 0
 	}
 
-	startIndex := 0
-	if initialJob.CurrentCheckpoint != "" {
-		// ถ้า checkpoint เป็น "COMPLETED" แสดงว่างานเสร็จสิ้นแล้ว
-		if initialJob.CurrentCheckpoint == "COMPLETED" {
-			log.Printf("Job %s already completed. Skipping execution.", jobID)
-			return nil
-		}
-
-		// ถ้ามี Checkpoint เก่า ให้หา Index ของ Checkpoint นั้น
-		// และเริ่มทำต่อจาก *ขั้นตอนถัดไป* (+1)
-		if index, ok := StepIndexMap[initialJob.CurrentCheckpoint]; ok {
-			startIndex = index + 1
-		} else {
-			// Checkpoint ไม่ถูกต้อง (งานถูกแก้ไข), ให้เริ่มต้นใหม่ หรือ Log Error
-			log.Printf("Warning: job %s has unknown checkpoint: %s. Starting from beginning.", jobID, initialJob.CurrentCheckpoint)
-			startIndex = 0
-		}
+	if job.CurrentCheckpoint == CompletedCheckpoint {
+		log.Printf("Job %s already completed. Skipping execution.", jobID)
+		return -1
 	}
 
-	if startIndex >= len(JobSteps) {
-		// ถ้า startIndex >= len(JobSteps) แสดงว่าทำ steps ครบแล้ว
-		// ต้องไปทำ completion step (set COMPLETED)
-		log.Printf("Job %s: All steps completed, proceeding to finalization.", jobID)
-		// ไม่ return nil ให้ไปทำ completion ต่อ
+	if index, ok := StepIndexMap[job.CurrentCheckpoint]; ok {
+		return index + 1
 	}
 
-	totalStep := len(JobSteps)
+	log.Printf("Warning: job %s has unknown checkpoint: %s. Starting from beginning.", jobID, job.CurrentCheckpoint)
 
-	initialJob.Status = domain.StatusRunning
-	if err := h.repo.Save(jobCtx, initialJob); err != nil {
+	return 0
+}
+
+// setJobRunning updates job status to running
+func (h *TaskHandler) setJobRunning(ctx context.Context, job *domain.Job) error {
+	job.Status = domain.StatusRunning
+	if err := h.repo.Save(ctx, job); err != nil {
 		return fmt.Errorf("failed to save job status: %w", err)
 	}
-	h.notifier.BroadcastUpdate(initialJob)
+	h.notifier.BroadcastUpdate(job)
 
+	return nil
+}
+
+// logJobStart logs the start of job processing
+func (h *TaskHandler) logJobStart(jobID string, startIndex int) {
 	if startIndex < len(JobSteps) {
 		log.Printf("Starting job: %s. Resuming from step: %s", jobID, JobSteps[startIndex])
 	} else {
 		log.Printf("Starting job: %s. All steps completed, finalizing...", jobID)
 	}
+}
 
-	// --- 2. เริ่ม Loop การทำงานจากจุดที่ค้างไว้ (The Fix) ---
-	// วน Loop ด้วย index ตั้งแต่ startIndex จนถึงจำนวน Steps ทั้งหมด
-	for i := startIndex; i < totalStep; i++ {
+// processJobSteps handles the main job processing loop
+func (h *TaskHandler) processJobSteps(ctx context.Context, jobID string, startIndex int, cancel context.CancelFunc) error {
+	totalSteps := len(JobSteps)
+
+	for i := startIndex; i < totalSteps; i++ {
 		currentStepName := JobSteps[i]
 
-		// --- 2A. ดึงสถานะล่าสุด (Source of Truth) ---
-		// *ต้อง* ดึงใหม่ทุกครั้งที่เริ่ม Loop
-		currentJob, err := h.repo.FindByID(jobCtx, jobID)
-
+		// Check current job status
+		currentJob, err := h.repo.FindByID(ctx, jobID)
 		if err != nil {
 			return fmt.Errorf("failed to find job in processing loop: %w", err)
 		}
 
-		// สร้าง Loop ตรวจสอบสถานะ (สำหรับ Pause/Cancel)
-		for currentJob.Status == domain.StatusPaused || currentJob.Status == domain.StatusCanceled {
-			if currentJob.Status == domain.StatusCanceled {
-				log.Printf("Job %s CANCELED (at start of loop)", jobID)
-				cancel()
-				return nil
-			}
-
-			// ถ้่า Paused
-			log.Printf("Job %s PAUSED, waiting...", jobID)
-
-			select {
-			case <-jobCtx.Done(): // ถูก Cancel ระหว่าง Pause
-				return nil
-			case <-time.After(2 * time.Second):
-				// ครบ 2 วิ, ไปเช็ค DB ใหม่
-				currentJob, err = h.repo.FindByID(jobCtx, jobID)
-				if err != nil {
-					return fmt.Errorf("failed to check job status during pause: %w", err)
-				}
-				// วนกลับไปเช็ค while loop (status == PAUSED or CANCELED)
-			}
+		// Handle pause/cancel states
+		if err := h.handleJobStateChanges(ctx, jobID, currentJob, cancel); err != nil {
+			return err
 		}
-		// ถ้าหลุดจาก Loop นี้มาได้ แสดงว่า Status คือ
 
-		// --- 2B. ตรวจสอบ Context ---
+		// Check context cancellation
 		select {
-		case <-jobCtx.Done():
+		case <-ctx.Done():
 			log.Printf("Job %s CANCELED (via context)", jobID)
 			return nil
 		default:
-			// OK, สถานะคือ RUNNING
+			// Continue processing
 		}
 
-		// --- 2C. ทำงานหนัก (จำลอง) ---
+		// Simulate work processing
 		log.Printf("Job %s: Running task: %s", jobID, currentStepName)
-		time.Sleep(2 * time.Second) // <-- ‼️ นี่คือ "หน้าต่างเวลา" ของ Race Condition ‼️
+		time.Sleep(StepProcessingTime)
 
-		// --- 2D. ตรวจสอบสถานะอีกครั้งหลังจากทำงานเสร็จ
-		jobAfterWork, err := h.repo.FindByID(jobCtx, jobID)
-		if err != nil {
-			return fmt.Errorf("failed to check job after work: %w", err)
-		}
-
-		// ถ้า User กด Pause/Cancel ระหว่างที่เรากำลัง Sleep 2 วิ
-		if jobAfterWork.Status != domain.StatusRunning {
-			log.Printf("Job %s was preempted (Status %s), discarding progress for step %d", jobID, jobAfterWork.Status, i+1)
-
-			if jobAfterWork.Status == domain.StatusCanceled {
-				cancel()
-			}
-
-			// วนกลับไปที่ Loop 'for' (i++) เพื่อประเมิณสถานะใหม่ (Pause/Cancel)
-			// เรา *ไม่* บันทึก Progress ของ step นี้
+		// Check if job was preempted during processing
+		if shouldSkipProgress, err := h.checkJobPreemption(ctx, jobID, i, cancel); err != nil {
+			return nil
+		} else if shouldSkipProgress {
 			continue
 		}
 
-		// --- 2E. บันทึกความคืบหน้า (ถ้าปลอดภัย)
-		// เรา *ไม่* บันทึก Progress ของ step นี้
-		log.Printf("Job %s: Saving Checkpoint: %s", jobID, currentStepName)
-		jobAfterWork.CurrentCheckpoint = currentStepName
-		jobAfterWork.Progress = h.CalculateProgress(currentStepName, totalStep)
-		if err := h.repo.Save(jobCtx, jobAfterWork); err != nil {
-			log.Printf("Error saving job %s: %v", jobID, err)
-			return fmt.Errorf("failed to save checkpoint: %w", err)
+		// Save progress
+		if err := h.saveStepProgress(ctx, jobID, currentStepName, totalSteps); err != nil {
+			return err
 		}
-		h.notifier.BroadcastUpdate(jobAfterWork)
 	}
 
-	// --- 3. งานเสร็จสิ้น ---
-	// (ตรรกะนี้กีต้องเช็ค Race Condition ด้วย)
+	return nil
+}
+
+func (h *TaskHandler) handleJobStateChanges(ctx context.Context, jobID string, job *domain.Job, cancel context.CancelFunc) error {
+	for job.Status == domain.StatusPaused || job.Status == domain.StatusCanceled {
+		if job.Status == domain.StatusCanceled {
+			log.Printf("Job%s CANCELED (at start of loop)", jobID)
+			cancel()
+			return nil
+		}
+
+		// Job is paused, wait and recheck
+		log.Printf("Job %s PAUSED, waiting...", jobID)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(StatusCheckInterval):
+			var err error
+			job, err = h.repo.FindByID(ctx, jobID)
+			if err != nil {
+				return fmt.Errorf("failed to check job status during pause: %w", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkJobPreemption checks if job was paused/canceled during step processing
+func (h *TaskHandler) checkJobPreemption(ctx context.Context, jobID string, stepIndex int, cancel context.CancelFunc) (bool, error) {
+	jobAfterWork, err := h.repo.FindByID(ctx, jobID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check job after work: %w", err)
+	}
+
+	if jobAfterWork.Status != domain.StatusRunning {
+		log.Printf("Job %s was preempted (Status %s), discarding progress for step %d", jobID, jobAfterWork.Status, stepIndex+1)
+
+		if jobAfterWork.Status == domain.StatusCanceled {
+			cancel()
+		}
+
+		return true, nil //Skip saving progress
+	}
+
+	return false, nil // Continue with saving progress
+}
+
+// saveStepProgress saves the current step progress
+func (h *TaskHandler) saveStepProgress(ctx context.Context, jobID string, stepName string, totalSteps int) error {
+	job, err := h.repo.FindByID(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to find job for progress update: %w", err)
+	}
+
+	log.Printf("Job %s: Saving Checkpoint: %s", jobID, stepName)
+	job.CurrentCheckpoint = stepName
+	job.Progress = h.CalculateProgress(stepName, totalSteps)
+
+	if err := h.repo.Save(ctx, job); err != nil {
+		log.Printf("Error saving job %s:%v", jobID, err)
+		return fmt.Errorf("failed to save checkpoint: %w", err)
+	}
+
+	h.notifier.BroadcastUpdate(job)
+	return nil
+}
+
+// completeJob finalizes job completion
+func (h *TaskHandler) completedJob(ctx context.Context, jobID string, cancel context.CancelFunc) error {
 	log.Printf("Job %s COMPLETED:", jobID)
 
-	finalJob, err := h.repo.FindByID(jobCtx, jobID)
+	finalJob, err := h.repo.FindByID(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("failed to get final job state: %w", err)
 	}
 
-	// ถ้าถูสั่งให้ Pause/Cancel วินาทีก่อนที่จะ Complete?
+	// Check if job was preempted before completion
 	if finalJob.Status != domain.StatusRunning {
 		log.Printf("Job %s was preempted before completion (Status: %s)", finalJob.FileName, finalJob.Status)
 		if finalJob.Status == domain.StatusCanceled {
 			cancel()
 		}
 
-		return nil // ไม่ต้องตั้งค่าเป็น COMPLETED
+		return nil
 	}
 
-	finalJob.CurrentCheckpoint = "COMPLETED"
+	// Mark job as completed
+	finalJob.CurrentCheckpoint = CompletedCheckpoint
 	finalJob.Status = domain.StatusCompleted
 	finalJob.Progress = 100
-	if err := h.repo.Save(jobCtx, finalJob); err != nil {
+
+	if err := h.repo.Save(ctx, finalJob); err != nil {
 		return fmt.Errorf("failed to save completed job: %w", err)
 	}
-	h.notifier.BroadcastUpdate(finalJob)
 
+	h.notifier.BroadcastUpdate(finalJob)
 	return nil
 }
 
