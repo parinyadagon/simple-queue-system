@@ -14,11 +14,8 @@ import (
 )
 
 const (
-	TaskTypeAnalysis     = "task:analysis"
-	TaskTypeDataAnalysis = "task:data_analysis" // NEW: Process-specific task types
-	TaskTypeFileImport   = "task:file_import"   // NEW
-	TaskTypeReportGen    = "task:report_gen"    // NEW
-	RedisAddr            = "127.0.0.1:6379"
+	TaskTypeAnalysis = "task:analysis" // Fallback task type for unknown processes
+	RedisAddr        = "127.0.0.1:6379"
 
 	// Job processing constants
 	JobTimeout          = 30 * time.Minute
@@ -80,23 +77,19 @@ func getStepExecutor(stepName string) StepFunction {
 		}
 	}
 
-	// Fallback to hardcoded functions for backward compatibility
-	switch stepName {
-	case "DOWNLOAD_SOURCE":
-		return (*TaskHandler).executeDownloadSource
-	case "DECOMPRESS_FILE":
-		return (*TaskHandler).executeDecompressFile
-	case "CLEANING_DATA":
-		return (*TaskHandler).executeCleaningData
-	case "ANALYSIS_MODEL_A":
-		return (*TaskHandler).executeAnalysisModelA
-	case "ANALYSIS_MODEL_B":
-		return (*TaskHandler).executeAnalysisModelB
-	case "GENERATING_REPORT":
-		return (*TaskHandler).executeGeneratingReport
-	default:
-		return nil
+	// For any unrecognized steps, use generic execution if we can find it in any process config
+	for _, config := range ProcessConfigurations {
+		for _, step := range config.Steps {
+			if step.Name == stepName {
+				return func(h *TaskHandler, ctx context.Context, jobID string) error {
+					return h.executeGenericStep(ctx, jobID, &step)
+				}
+			}
+		}
 	}
+
+	// If step not found anywhere, return nil (will use default processing)
+	return nil
 }
 
 // saveSubCheckpoint saves a sub-checkpoint and calculates detailed progress
@@ -284,16 +277,18 @@ func (q *asynqJobQueue) EnqueueForProcess(jobID string, processType string) erro
 
 // getTaskTypeForProcess returns the appropriate task type for a process
 func getTaskTypeForProcess(processType string) string {
-	switch processType {
-	case "data_analysis":
-		return TaskTypeDataAnalysis
-	case "file_import":
-		return TaskTypeFileImport
-	case "report_gen":
-		return TaskTypeReportGen
-	default:
-		return TaskTypeAnalysis // fallback
+	// Check if process exists in configurations
+	if _, exists := ProcessConfigurations[processType]; exists {
+		return fmt.Sprintf("task:%s", processType)
 	}
+
+	// Fallback for unknown process types
+	return TaskTypeAnalysis // "task:analysis"
+}
+
+// GetTaskTypeForProcess is the exported version for external use
+func GetTaskTypeForProcess(processType string) string {
+	return getTaskTypeForProcess(processType)
 }
 
 // --- 2. Asynq Task Handlers (Worker Logic)
@@ -304,11 +299,6 @@ type TaskHandler struct {
 
 func NewTaskHandler(repo ports.JobRepository, notifier ports.Notifier) *TaskHandler {
 	return &TaskHandler{repo: repo, notifier: notifier}
-}
-
-// ExecuteGenericStep is exported version for testing
-func (h *TaskHandler) ExecuteGenericStep(ctx context.Context, jobID string, stepConfig *JobStepConfig) error {
-	return h.executeGenericStep(ctx, jobID, stepConfig)
 }
 
 // executeGenericStep executes a generic step using process configuration
@@ -331,151 +321,6 @@ func (h *TaskHandler) executeGenericStep(ctx context.Context, jobID string, step
 	}
 
 	return h.executeStepWithSubCheckpoints(ctx, jobID, stepConfig.Name, actions)
-}
-
-// Step execution functions - each step simulates specific work with sub-checkpoints
-func (h *TaskHandler) executeDownloadSource(ctx context.Context, jobID string) error {
-	stepName := "DOWNLOAD_SOURCE"
-
-	actions := []func(){
-		func() {
-			log.Printf("Job %s: Connecting to remote source...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Downloading files...", jobID)
-			time.Sleep(StepProcessingTime)
-		},
-		func() {
-			log.Printf("Job %s: Validating downloaded files...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Source files downloaded successfully", jobID)
-		},
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
-}
-
-func (h *TaskHandler) executeDecompressFile(ctx context.Context, jobID string) error {
-	stepName := "DECOMPRESS_FILE"
-
-	actions := []func(){
-		func() {
-			log.Printf("Job %s: Reading compressed files...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Extracting files...", jobID)
-			time.Sleep(StepProcessingTime)
-		},
-		func() {
-			log.Printf("Job %s: Verifying extracted files...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Files decompressed successfully", jobID)
-		},
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
-}
-
-func (h *TaskHandler) executeCleaningData(ctx context.Context, jobID string) error {
-	stepName := "CLEANING_DATA"
-
-	actions := []func(){
-		func() {
-			log.Printf("Job %s: Scanning data for inconsistencies...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Filtering invalid data...", jobID)
-			time.Sleep(StepProcessingTime)
-		},
-		func() {
-			log.Printf("Job %s: Normalizing data format...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Data cleaning completed", jobID)
-		},
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
-}
-
-func (h *TaskHandler) executeAnalysisModelA(ctx context.Context, jobID string) error {
-	stepName := "ANALYSIS_MODEL_A"
-
-	actions := []func(){
-		func() {
-			log.Printf("Job %s: Loading Analysis Model A...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Processing data with Model A...", jobID)
-			time.Sleep(StepProcessingTime)
-		},
-		func() {
-			log.Printf("Job %s: Calculating results for Model A...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Analysis Model A completed", jobID)
-		},
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
-}
-
-func (h *TaskHandler) executeAnalysisModelB(ctx context.Context, jobID string) error {
-	stepName := "ANALYSIS_MODEL_B"
-
-	actions := []func(){
-		func() {
-			log.Printf("Job %s: Loading Analysis Model B...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Processing data with Model B...", jobID)
-			time.Sleep(StepProcessingTime)
-		},
-		func() {
-			log.Printf("Job %s: Calculating results for Model B...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Analysis Model B completed", jobID)
-		},
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
-}
-
-func (h *TaskHandler) executeGeneratingReport(ctx context.Context, jobID string) error {
-	stepName := "GENERATING_REPORT"
-
-	actions := []func(){
-		func() {
-			log.Printf("Job %s: Collecting analysis results...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Formatting report data...", jobID)
-			time.Sleep(StepProcessingTime)
-		},
-		func() {
-			log.Printf("Job %s: Finalizing report layout...", jobID)
-			time.Sleep(StepProcessingTime / 2)
-		},
-		func() {
-			log.Printf("Job %s: Report generated successfully", jobID)
-		},
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
 }
 
 // HandleAnalysisTask คือ Worker ที่ทำงานจริง

@@ -8,8 +8,6 @@ import (
 	"simple-queue-103/internal/core/domain"
 	"simple-queue-103/internal/core/ports"
 	"simple-queue-103/internal/lib/process"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
@@ -250,11 +248,6 @@ func (h *ProcessTaskHandler) getProcessStepDescriptions() map[string]string {
 	return descriptions
 }
 
-// GetProcessStepExecutor is exported version for testing
-func (h *ProcessTaskHandler) GetProcessStepExecutor(stepName string) ProcessStepFunction {
-	return h.getProcessStepExecutor(stepName)
-}
-
 func (h *ProcessTaskHandler) getProcessStepExecutor(stepName string) ProcessStepFunction {
 	// First, try to get from process configuration
 	for _, step := range h.processConfig.Steps {
@@ -271,28 +264,9 @@ func (h *ProcessTaskHandler) getProcessStepExecutor(stepName string) ProcessStep
 		}
 	}
 
-	// Fallback to original TaskHandler methods if needed
-	return func(handler *ProcessTaskHandler, ctx context.Context, jobID string) error {
-		taskHandler := &TaskHandler{repo: handler.repo, notifier: handler.notifier}
-		switch stepName {
-		case "DOWNLOAD_SOURCE":
-			return taskHandler.executeDownloadSource(ctx, jobID)
-		case "DECOMPRESS_FILE":
-			return taskHandler.executeDecompressFile(ctx, jobID)
-		case "CLEANING_DATA":
-			return taskHandler.executeCleaningData(ctx, jobID)
-		case "ANALYSIS_MODEL_A":
-			return taskHandler.executeAnalysisModelA(ctx, jobID)
-		case "ANALYSIS_MODEL_B":
-			return taskHandler.executeAnalysisModelB(ctx, jobID)
-		case "GENERATING_REPORT":
-			return taskHandler.executeGeneratingReport(ctx, jobID)
-		default:
-			log.Printf("⚠️ ProcessTaskHandler[%s]: Unknown step %s", handler.processType, stepName)
-			time.Sleep(StepProcessingTime)
-			return nil
-		}
-	}
+	// This should never happen if process config is correct
+	log.Printf("❌ ProcessTaskHandler[%s]: CRITICAL - Step '%s' not found in process configuration", h.processType, stepName)
+	return nil // Return nil to trigger fallback in processJobSteps
 }
 
 // ProcessStepFunction defines the signature for process step processing functions
@@ -531,28 +505,8 @@ func (h *ProcessTaskHandler) calculateProcessProgress(checkpoint string, totalSt
 		}
 	}
 
-	// Fallback: try to parse substep pattern (STEPNAME_substep_N)
-	processSteps := h.getProcessSteps()
-	for stepIndex, stepName := range processSteps {
-		if strings.HasPrefix(checkpoint, stepName+"_substep_") {
-			subStepStr := strings.TrimPrefix(checkpoint, stepName+"_substep_")
-			if subStepIndex, err := strconv.Atoi(subStepStr); err == nil && subStepIndex > 0 {
-				// Assume 3 sub-steps per main step for fallback
-				subStepsCount := 3
-				subProgress := float64(subStepIndex) / float64(subStepsCount)
-				stepWeight := float64(MaxProgressBeforeComplete) / float64(actualTotalSteps)
-				mainStepProgress := float64(stepIndex) * stepWeight
-				currentStepProgress := stepWeight * subProgress
-
-				finalProgress := int(mainStepProgress + currentStepProgress)
-				if finalProgress > MaxProgressBeforeComplete {
-					finalProgress = MaxProgressBeforeComplete
-				}
-				return finalProgress
-			}
-		}
-	}
-
+	// If no checkpoint matches, return 0
+	log.Printf("⚠️ ProcessTaskHandler[%s]: Unknown checkpoint '%s', returning 0%% progress", h.processType, checkpoint)
 	return 0
 }
 

@@ -74,9 +74,9 @@ func main() {
 
 	// Register all process handlers
 	mux := asynq.NewServeMux()
-	mux.HandleFunc(queue.TaskTypeDataAnalysis, dataAnalysisHandler.HandleAnalysisTask)
-	mux.HandleFunc(queue.TaskTypeFileImport, fileImportHandler.HandleAnalysisTask)
-	mux.HandleFunc(queue.TaskTypeReportGen, reportGenHandler.HandleAnalysisTask)
+	mux.HandleFunc(queue.GetTaskTypeForProcess("data_analysis"), dataAnalysisHandler.HandleAnalysisTask)
+	mux.HandleFunc(queue.GetTaskTypeForProcess("file_import"), fileImportHandler.HandleAnalysisTask)
+	mux.HandleFunc(queue.GetTaskTypeForProcess("report_gen"), reportGenHandler.HandleAnalysisTask)
 
 	// Keep backward compatibility
 	taskHandler := queue.NewTaskHandler(jobRepo, notifier)
