@@ -264,10 +264,9 @@ func (h *ProcessTaskHandler) getProcessStepExecutor(stepName string) ProcessStep
 					return step.ExecuteFunc(ctx, jobID, &step)
 				}
 			}
-			// If no custom function, use generic execution
+			// If no custom function, use process-specific generic execution
 			return func(handler *ProcessTaskHandler, ctx context.Context, jobID string) error {
-				taskHandler := &TaskHandler{repo: handler.repo, notifier: handler.notifier}
-				return taskHandler.executeGenericStep(ctx, jobID, &step)
+				return handler.executeProcessGenericStep(ctx, jobID, &step)
 			}
 		}
 	}
@@ -298,6 +297,93 @@ func (h *ProcessTaskHandler) getProcessStepExecutor(stepName string) ProcessStep
 
 // ProcessStepFunction defines the signature for process step processing functions
 type ProcessStepFunction func(h *ProcessTaskHandler, ctx context.Context, jobID string) error
+
+// executeProcessGenericStep executes a generic step using process-specific sub-checkpoints
+func (h *ProcessTaskHandler) executeProcessGenericStep(ctx context.Context, jobID string, stepConfig *process.JobStepConfig) error {
+	if len(stepConfig.SubSteps) == 0 {
+		// No sub-steps, execute simple processing
+		log.Printf("🔄 ProcessTaskHandler[%s]: Job %s - Processing %s...", h.processType, jobID, stepConfig.Description)
+		time.Sleep(StepProcessingTime)
+		return nil
+	}
+
+	// Execute with process-specific sub-steps
+	for _, subStep := range stepConfig.SubSteps {
+		// Save sub-checkpoint using actual sub-step name from process config
+		if err := h.saveProcessSubCheckpoint(ctx, jobID, stepConfig.Name, subStep.Name); err != nil {
+			return err
+		}
+
+		// Execute the sub-step
+		log.Printf("🔄 ProcessTaskHandler[%s]: Job %s - %s", h.processType, jobID, subStep.Description)
+		if subStep.Duration > 0 {
+			time.Sleep(subStep.Duration)
+		}
+
+		// Call custom action if provided
+		if subStep.Action != nil {
+			subStep.Action()
+		}
+	}
+
+	return nil
+}
+
+// saveProcessSubCheckpoint saves a sub-checkpoint with process-specific details
+func (h *ProcessTaskHandler) saveProcessSubCheckpoint(ctx context.Context, jobID string, mainStep string, subCheckpoint string) error {
+	job, err := h.repo.FindByID(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("failed to find job for sub-checkpoint update: %w", err)
+	}
+
+	// Check if job was cancelled/paused during processing
+	if job.Status != domain.StatusRunning {
+		log.Printf("⚠️ ProcessTaskHandler[%s]: Job %s was preempted, skipping sub-checkpoint %s", h.processType, jobID, subCheckpoint)
+		return nil
+	}
+
+	// Get human-readable step description from process config
+	stepDescription := h.getProcessStepDescription(subCheckpoint)
+	if stepDescription == "" {
+		stepDescription = subCheckpoint // Fallback to checkpoint name
+	}
+
+	log.Printf("📋 ProcessTaskHandler[%s]: Job %s - Sub-checkpoint: %s (%s)", h.processType, jobID, subCheckpoint, stepDescription)
+	job.CurrentCheckpoint = subCheckpoint
+	job.CurrentStepName = stepDescription
+	job.Progress = h.calculateProcessProgress(subCheckpoint, len(h.processConfig.Steps))
+
+	if err := h.repo.Save(ctx, job); err != nil {
+		log.Printf("⚠️ ProcessTaskHandler[%s]: Error saving sub-checkpoint for job %s: %v", h.processType, jobID, err)
+		return fmt.Errorf("failed to save sub-checkpoint: %w", err)
+	}
+
+	h.notifier.BroadcastUpdate(job)
+	return nil
+}
+
+// getProcessStepDescription gets description from process configuration
+func (h *ProcessTaskHandler) getProcessStepDescription(checkpoint string) string {
+	// Check main steps
+	for _, step := range h.processConfig.Steps {
+		if step.Name == checkpoint {
+			return step.Description
+		}
+		// Check sub-steps
+		for _, subStep := range step.SubSteps {
+			if subStep.Name == checkpoint {
+				return subStep.Description
+			}
+		}
+	}
+
+	// Special states
+	if checkpoint == CompletedCheckpoint {
+		return "งานเสร็จสิ้นแล้ว"
+	}
+
+	return ""
+}
 
 // Helper methods (reuse from original TaskHandler with process context)
 func (h *ProcessTaskHandler) extractJobID(t *asynq.Task) (string, error) {
