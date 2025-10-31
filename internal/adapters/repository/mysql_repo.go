@@ -35,8 +35,8 @@ func NewSQLJobRepository(dataSourceName string) (ports.JobRepository, error) {
 // Save จะใช้ INSERT ... ON DUPLICATE KEY UPDATE (เรียกว่า "Upsert")
 func (r *mysqlJobRepository) Save(ctx context.Context, job *domain.Job) error {
 	query := `
-			INSERT INTO jobs (id, file_name, status, progress, current_checkpoint, current_step_name, created_at)
-			VALUES (:id, :file_name, :status, :progress, :current_checkpoint, :current_step_name, :created_at)
+			INSERT INTO jobs (id, process_type, process_version, file_name, status, progress, current_checkpoint, current_step_name, created_at)
+			VALUES (:id, :process_type, :process_version, :file_name, :status, :progress, :current_checkpoint, :current_step_name, :created_at)
 			ON DUPLICATE KEY UPDATE
 					status = VALUES(status),
 					current_checkpoint = VALUES(current_checkpoint),
@@ -73,4 +73,43 @@ func (r *mysqlJobRepository) FindAll(ctx context.Context) ([]*domain.Job, error)
 	}
 
 	return jobs, nil
+}
+
+// FindByProcessType returns jobs of a specific process type
+func (r *mysqlJobRepository) FindByProcessType(ctx context.Context, processType string) ([]*domain.Job, error) {
+	var jobs []*domain.Job
+	query := `SELECT * FROM jobs WHERE process_type = ? ORDER BY created_at DESC`
+
+	err := r.db.SelectContext(ctx, &jobs, query, processType)
+	if err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
+}
+
+// FindByProcessAndStatus returns jobs of a specific process type and status
+func (r *mysqlJobRepository) FindByProcessAndStatus(ctx context.Context, processType string, status domain.JobStatus) ([]*domain.Job, error) {
+	var jobs []*domain.Job
+	query := `SELECT * FROM jobs WHERE process_type = ? AND status = ? ORDER BY created_at DESC`
+
+	err := r.db.SelectContext(ctx, &jobs, query, processType, status)
+	if err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
+}
+
+// CountByProcess returns the count of jobs for a specific process type
+func (r *mysqlJobRepository) CountByProcess(ctx context.Context, processType string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM jobs WHERE process_type = ?`
+
+	err := r.db.GetContext(ctx, &count, query, processType)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }

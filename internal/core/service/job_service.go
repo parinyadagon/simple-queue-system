@@ -24,21 +24,28 @@ func NewJobService(repo ports.JobRepository, queue ports.JobQueue, notifier port
 }
 
 func (s *jobService) CreateJob(fileName string) (*domain.Job, error) {
+	// Default to data_analysis process for backward compatibility
+	return s.CreateJobForProcess(fileName, "data_analysis")
+}
+
+func (s *jobService) CreateJobForProcess(fileName string, processType string) (*domain.Job, error) {
 	ctx := context.Background()
 	job := &domain.Job{
-		ID:        uuid.NewString(),
-		FileName:  fileName,
-		Status:    domain.StatusPending,
-		Progress:  0,
-		CreatedAt: time.Now(),
+		ID:             uuid.NewString(),
+		ProcessType:    processType,
+		ProcessVersion: "1.0",
+		FileName:       fileName,
+		Status:         domain.StatusPending,
+		Progress:       0,
+		CreatedAt:      time.Now(),
 	}
 
 	if err := s.repo.Save(ctx, job); err != nil {
 		return nil, err
 	}
 
-	// ส่งเข้า Queue เพื่อให้ Worker เริ่มทำงาน
-	if err := s.queue.EnqueueAnalysis(job.ID); err != nil {
+	// ส่งเข้า Queue เพื่อให้ Worker เริ่มทำงาน (with process-specific task type)
+	if err := s.queue.EnqueueForProcess(job.ID, processType); err != nil {
 		return nil, err
 	}
 
@@ -49,6 +56,10 @@ func (s *jobService) CreateJob(fileName string) (*domain.Job, error) {
 
 func (s *jobService) GetAllJobs() ([]*domain.Job, error) {
 	return s.repo.FindAll(context.Background())
+}
+
+func (s *jobService) GetJobsByProcess(processType string) ([]*domain.Job, error) {
+	return s.repo.FindByProcessType(context.Background(), processType)
 }
 
 func (s *jobService) GetJob(id string) (*domain.Job, error) {
@@ -68,7 +79,7 @@ func (s *jobService) ControlJob(id string, command string) error {
 	case "RESTART": // (RESTART = PAUSE -> RUNNING with forced re-enqueue)
 		job.Status = domain.StatusRunning
 		// บังคับ enqueue job กลับเข้า queue อีกครั้งเพื่อให้ worker ทำงานต่อ
-		if err := s.queue.EnqueueAnalysis(job.ID); err != nil {
+		if err := s.queue.EnqueueForProcess(job.ID, job.ProcessType); err != nil {
 			return err
 		}
 	case "CANCEL":

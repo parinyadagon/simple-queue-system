@@ -102,13 +102,18 @@ func createJobsTable(db *sql.DB) error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS jobs (
 		id VARCHAR(255) PRIMARY KEY,
+		process_type VARCHAR(100) NOT NULL DEFAULT 'data_analysis',
+		process_version VARCHAR(50) NOT NULL DEFAULT '1.0',
 		file_name VARCHAR(255) NOT NULL,
 		status ENUM('PENDING', 'RUNNING', 'PAUSED', 'CANCELED', 'COMPLETED') NOT NULL DEFAULT 'PENDING',
 		progress INT DEFAULT 0,
 		current_checkpoint VARCHAR(255) DEFAULT '',
 		current_step_name VARCHAR(500) DEFAULT '',
 		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+		INDEX idx_jobs_process_type (process_type),
+		INDEX idx_jobs_process_status (process_type, status),
+		INDEX idx_jobs_process_created (process_type, created_at)
 	);`
 
 	_, err := db.Exec(schema)
@@ -133,6 +138,8 @@ func (ts *TestContainerSetup) Teardown(ctx context.Context) error {
 func (ts *TestContainerSetup) CreateTestJob(id string, status domain.JobStatus, checkpoint string) *domain.Job {
 	return &domain.Job{
 		ID:                id,
+		ProcessType:       "data_analysis", // Default for testing
+		ProcessVersion:    "1.0",
 		FileName:          "testcontainer_file.zip",
 		Status:            status,
 		CurrentCheckpoint: checkpoint,

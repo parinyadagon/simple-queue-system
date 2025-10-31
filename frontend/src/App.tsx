@@ -3,11 +3,21 @@ import { useState, useEffect, useCallback } from "react";
 // 1. ตรงกับ struct `domain.Job` ของ Go
 interface Job {
   id: string;
+  process_type: string; // NEW: Process type
+  process_version: string; // NEW: Process version
   file_name: string;
   status: "PENDING" | "RUNNING" | "PAUSED" | "FAILED" | "CANCELED" | "COMPLETED";
   progress: number;
   created_at: string;
   current_step_name?: string;
+}
+
+// 2. Interface สำหรับ Process
+interface Process {
+  id: string;
+  name: string;
+  description: string;
+  steps: number;
 }
 
 // 2. Interface สำหรับ Job Statistics
@@ -47,6 +57,9 @@ function useJobSocket(onJobUpdate: (job: Job) => void) {
 
 export default function App() {
   const [jobs, setJobs] = useState<Record<string, Job>>({}); // ใช้ Record/Object เพื่อ lookup O(1)
+  const [processes, setProcesses] = useState<Process[]>([]);
+  const [selectedProcess, setSelectedProcess] = useState<string>("all");
+  const [loading, setLoading] = useState(false);
 
   // 4. คำนวณ Statistics จาก jobs
   const jobStats: JobStats = (jobs ? Object.values(jobs) : []).reduce(
@@ -88,9 +101,24 @@ export default function App() {
   // 6. เชื่อมต่อ WebSocket
   useJobSocket(handleJobUpdate);
 
-  // 7. ดึงข้อมูล Job ทั้งหมดครั้งแรก
+  // 7. ดึงข้อมูล Processes
   useEffect(() => {
-    fetch("http://localhost:8080/jobs")
+    fetch("http://localhost:8080/processes")
+      .then((res) => res.json())
+      .then((processData: Process[]) => {
+        setProcesses(processData || []);
+      })
+      .catch((error) => {
+        console.error("Failed to fetch processes:", error);
+        setProcesses([]);
+      });
+  }, []);
+
+  // 8. ดึงข้อมูล Jobs (filtered by process)
+  const fetchJobs = useCallback(() => {
+    const url = selectedProcess === "all" ? "http://localhost:8080/jobs" : `http://localhost:8080/jobs?process_type=${selectedProcess}`;
+
+    fetch(url)
       .then((res) => res.json())
       .then((initialJobs: Job[] | null) => {
         if (initialJobs && Array.isArray(initialJobs)) {
@@ -107,11 +135,24 @@ export default function App() {
         console.error("Failed to fetch jobs:", error);
         setJobs({});
       });
-  }, []);
+  }, [selectedProcess]);
 
-  // 8. ฟังก์ชันควบคุม
-  const createJob = () => {
-    fetch("http://localhost:8080/jobs", { method: "POST" });
+  // 9. เรียก fetchJobs เมื่อ selectedProcess เปลี่ยน
+  useEffect(() => {
+    fetchJobs();
+  }, [fetchJobs]);
+
+  // 10. ฟังก์ชันควบคุม
+  const createJob = (processType: string = "data_analysis") => {
+    setLoading(true);
+    fetch("http://localhost:8080/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        file_name: `sample_${processType}_${Date.now()}.csv`,
+        process_type: processType,
+      }),
+    }).finally(() => setLoading(false));
   };
 
   const controlJob = (id: string, command: "PAUSE" | "RESTART" | "CANCEL") => {
@@ -147,15 +188,65 @@ export default function App() {
                 <span>Live updates enabled</span>
               </div>
             </div>
-            <button
-              onClick={createJob}
-              className="group relative bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-4 px-8 rounded-2xl shadow-2xl transform hover:scale-105 hover:-translate-y-1 transition-all duration-300 flex items-center space-x-3">
-              <svg className="w-6 h-6 group-hover:rotate-90 transition-transform duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              <span className="text-lg">Create New Job</span>
-              <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-blue-600 to-purple-600 opacity-0 group-hover:opacity-30 transition-opacity duration-300"></div>
-            </button>
+            <div className="flex flex-col sm:flex-row gap-4">
+              {/* Process Selector */}
+              <div className="relative">
+                <select
+                  value={selectedProcess}
+                  onChange={(e) => setSelectedProcess(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 text-white rounded-xl px-4 py-2 pr-8 appearance-none focus:outline-none focus:ring-2 focus:ring-purple-500 transition-all duration-200">
+                  <option value="all">All Processes</option>
+                  {processes.map((process) => (
+                    <option key={process.id} value={process.id}>
+                      {process.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute inset-y-0 right-0 flex items-center px-2 pointer-events-none">
+                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </div>
+
+              {/* Create Job Dropdown */}
+              <div className="relative group">
+                <button
+                  className="group relative bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-semibold py-4 px-8 rounded-2xl shadow-2xl transform hover:scale-105 hover:-translate-y-1 transition-all duration-300 flex items-center space-x-3"
+                  disabled={loading}>
+                  {loading ? (
+                    <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  ) : (
+                    <svg
+                      className="w-6 h-6 group-hover:rotate-90 transition-transform duration-300"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                  )}
+                  <span className="text-lg">{loading ? "Creating..." : "Create New Job"}</span>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {/* Dropdown Menu */}
+                <div className="absolute right-0 mt-2 w-64 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                  {processes.map((process) => (
+                    <button
+                      key={process.id}
+                      onClick={() => createJob(process.id)}
+                      className="w-full text-left px-4 py-3 hover:bg-slate-700 transition-colors first:rounded-t-xl last:rounded-b-xl"
+                      disabled={loading}>
+                      <div className="font-semibold text-white">{process.name}</div>
+                      <div className="text-sm text-gray-400">{process.description}</div>
+                      <div className="text-xs text-purple-300 mt-1">{process.steps} steps</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Enhanced Job Statistics Cards */}
@@ -273,12 +364,19 @@ function JobItem({ job, onControl, index }: JobItemProps) {
     <div className="p-6 hover:bg-white/5 transition-all duration-300" style={{ animationDelay: `${index * 50}ms` }}>
       <div className="flex flex-col lg:flex-row lg:items-center justify-between space-y-4 lg:space-y-0">
         <div className="flex-1 space-y-3">
-          {/* Status and ID */}
-          <div className="flex items-center space-x-3">
+          {/* Status, Process Type, and ID */}
+          <div className="flex items-center space-x-3 flex-wrap gap-2">
             <div className={`flex items-center space-x-2 px-3 py-1 rounded-full ${statusColors.bg} ${statusColors.border} border`}>
               <span className="text-lg">{getStatusIcon(job.status)}</span>
               <span className={`font-semibold text-sm uppercase tracking-wide ${statusColors.text}`}>{job.status}</span>
             </div>
+
+            {/* Process Type Badge */}
+            <div className="flex items-center space-x-2 px-3 py-1 rounded-full bg-purple-500/20 border border-purple-500/30">
+              <span className="text-sm">🔧</span>
+              <span className="font-semibold text-sm text-purple-300 capitalize">{job.process_type?.replace("_", " ") || "Unknown"}</span>
+            </div>
+
             <div className="text-gray-500 text-sm font-mono bg-white/5 px-2 py-1 rounded">ID: {job.id.substring(0, 8)}...</div>
           </div>
 

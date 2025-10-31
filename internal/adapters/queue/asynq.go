@@ -7,375 +7,43 @@ import (
 	"log"
 	"simple-queue-103/internal/core/domain"
 	"simple-queue-103/internal/core/ports"
+	"simple-queue-103/internal/lib/process"
 	"time"
 
 	"github.com/hibiken/asynq"
 )
 
 const (
-	TaskTypeAnalysis = "task:analysis"
-	RedisAddr        = "127.0.0.1:6379"
+	TaskTypeAnalysis     = "task:analysis"
+	TaskTypeDataAnalysis = "task:data_analysis" // NEW: Process-specific task types
+	TaskTypeFileImport   = "task:file_import"   // NEW
+	TaskTypeReportGen    = "task:report_gen"    // NEW
+	RedisAddr            = "127.0.0.1:6379"
 
 	// Job processing constants
-	JobTimeout                = 30 * time.Minute
-	HeartbeatInterval         = 1 * time.Minute
-	StatusCheckInterval       = 2 * time.Second
-	StepProcessingTime        = 2 * time.Second
-	CompletedCheckpoint       = "COMPLETED"
-	MaxProgressBeforeComplete = 95
+	JobTimeout          = 30 * time.Minute
+	HeartbeatInterval   = 1 * time.Minute
+	StatusCheckInterval = 2 * time.Second
 )
 
-// JobStepConfig defines a configurable job step with sub-checkpoints
-type JobStepConfig struct {
-	Name        string                                                             `json:"name"`
-	Description string                                                             `json:"description"`
-	SubSteps    []JobSubStepConfig                                                 `json:"sub_steps"`
-	ExecuteFunc func(ctx context.Context, jobID string, step *JobStepConfig) error `json:"-"`
-}
+// Process constants from library
+var (
+	processConstants          = process.DefaultProcessConstants()
+	StepProcessingTime        = processConstants.StepProcessingTime
+	CompletedCheckpoint       = processConstants.CompletedCheckpoint
+	MaxProgressBeforeComplete = processConstants.MaxProgressBeforeComplete
+)
 
-// JobSubStepConfig defines a sub-checkpoint within a step
-type JobSubStepConfig struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Duration    time.Duration `json:"duration"`
-	Action      func()        `json:"-"`
-}
+// Type aliases for library types
+type JobStepConfig = process.JobStepConfig
+type JobSubStepConfig = process.JobSubStepConfig
+type JobProcessConfig = process.JobProcessConfig
 
-// JobProcessConfig defines the entire job process configuration
-type JobProcessConfig struct {
-	ProcessName string          `json:"process_name"`
-	Steps       []JobStepConfig `json:"steps"`
-}
+// Use process configurations from library
+var ProcessConfigurations = process.ProcessConfigurations
 
-// Pre-defined process configurations
-var ProcessConfigurations = map[string]*JobProcessConfig{
-	"data_analysis": NewDataAnalysisProcess(),
-	"file_import":   NewFileImportProcess(),
-	"report_gen":    NewReportGenerationProcess(),
-}
-
-// NewDataAnalysisProcess creates the default data analysis job configuration
-func NewDataAnalysisProcess() *JobProcessConfig {
-	return &JobProcessConfig{
-		ProcessName: "Data Analysis",
-		Steps: []JobStepConfig{
-			{
-				Name:        "DOWNLOAD_SOURCE",
-				Description: "กำลังดาวน์โหลดไฟล์ต้นฉบับ",
-				SubSteps: []JobSubStepConfig{
-					{Name: "DOWNLOAD_SOURCE_CONNECTING", Description: "กำลังเชื่อมต่อกับเซิร์ฟเวอร์", Duration: StepProcessingTime / 2},
-					{Name: "DOWNLOAD_SOURCE_DOWNLOADING", Description: "กำลังดาวน์โหลดไฟล์", Duration: StepProcessingTime},
-					{Name: "DOWNLOAD_SOURCE_VALIDATING", Description: "กำลังตรวจสอบไฟล์ที่ดาวน์โหลด", Duration: StepProcessingTime / 2},
-					{Name: "DOWNLOAD_SOURCE_COMPLETED", Description: "ดาวน์โหลดไฟล์เสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "DECOMPRESS_FILE",
-				Description: "กำลังแตกไฟล์ข้อมูล",
-				SubSteps: []JobSubStepConfig{
-					{Name: "DECOMPRESS_FILE_READING", Description: "กำลังอ่านไฟล์บีบอัด", Duration: StepProcessingTime / 2},
-					{Name: "DECOMPRESS_FILE_EXTRACTING", Description: "กำลังแตกไฟล์", Duration: StepProcessingTime},
-					{Name: "DECOMPRESS_FILE_VERIFYING", Description: "กำลังตรวจสอบไฟล์ที่แตก", Duration: StepProcessingTime / 2},
-					{Name: "DECOMPRESS_FILE_COMPLETED", Description: "แตกไฟล์เสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "CLEANING_DATA",
-				Description: "กำลังทำความสะอาดข้อมูล",
-				SubSteps: []JobSubStepConfig{
-					{Name: "CLEANING_DATA_SCANNING", Description: "กำลังสแกนหาข้อมูลที่ผิดปกติ", Duration: StepProcessingTime / 2},
-					{Name: "CLEANING_DATA_FILTERING", Description: "กำลังกรองข้อมูลที่ไม่ถูกต้อง", Duration: StepProcessingTime},
-					{Name: "CLEANING_DATA_NORMALIZING", Description: "กำลังปรับรูปแบบข้อมูล", Duration: StepProcessingTime / 2},
-					{Name: "CLEANING_DATA_COMPLETED", Description: "ทำความสะอาดข้อมูลเสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "ANALYSIS_MODEL_A",
-				Description: "กำลังวิเคราะห์ด้วยโมเดล A",
-				SubSteps: []JobSubStepConfig{
-					{Name: "ANALYSIS_MODEL_A_LOADING", Description: "กำลังโหลดโมเดลวิเคราะห์ A", Duration: StepProcessingTime / 2},
-					{Name: "ANALYSIS_MODEL_A_PROCESSING", Description: "กำลังประมวลผลด้วยโมเดล A", Duration: StepProcessingTime},
-					{Name: "ANALYSIS_MODEL_A_CALCULATING", Description: "กำลังคำนวณผลลัพธ์โมเดล A", Duration: StepProcessingTime / 2},
-					{Name: "ANALYSIS_MODEL_A_COMPLETED", Description: "วิเคราะห์ด้วยโมเดล A เสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "ANALYSIS_MODEL_B",
-				Description: "กำลังวิเคราะห์ด้วยโมเดล B",
-				SubSteps: []JobSubStepConfig{
-					{Name: "ANALYSIS_MODEL_B_LOADING", Description: "กำลังโหลดโมเดลวิเคราะห์ B", Duration: StepProcessingTime / 2},
-					{Name: "ANALYSIS_MODEL_B_PROCESSING", Description: "กำลังประมวลผลด้วยโมเดล B", Duration: StepProcessingTime},
-					{Name: "ANALYSIS_MODEL_B_CALCULATING", Description: "กำลังคำนวณผลลัพธ์โมเดล B", Duration: StepProcessingTime / 2},
-					{Name: "ANALYSIS_MODEL_B_COMPLETED", Description: "วิเคราะห์ด้วยโมเดล B เสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "GENERATING_REPORT",
-				Description: "กำลังสร้างรายงาน",
-				SubSteps: []JobSubStepConfig{
-					{Name: "GENERATING_REPORT_COLLECTING", Description: "กำลังรวบรวมผลการวิเคราะห์", Duration: StepProcessingTime / 2},
-					{Name: "GENERATING_REPORT_FORMATTING", Description: "กำลังจัดรูปแบบรายงาน", Duration: StepProcessingTime},
-					{Name: "GENERATING_REPORT_FINALIZING", Description: "กำลังจัดเรียงรายงานขั้นสุดท้าย", Duration: StepProcessingTime / 2},
-					{Name: "GENERATING_REPORT_COMPLETED", Description: "สร้างรายงานเสร็จสิ้น", Duration: 0},
-				},
-			},
-		},
-	}
-}
-
-// NewFileImportProcess creates a simple file import job configuration
-func NewFileImportProcess() *JobProcessConfig {
-	return &JobProcessConfig{
-		ProcessName: "File Import",
-		Steps: []JobStepConfig{
-			{
-				Name:        "UPLOAD_FILE",
-				Description: "กำลังอัพโหลดไฟล์",
-				SubSteps: []JobSubStepConfig{
-					{Name: "UPLOAD_FILE_VALIDATING", Description: "กำลังตรวจสอบไฟล์", Duration: time.Second},
-					{Name: "UPLOAD_FILE_UPLOADING", Description: "กำลังอัพโหลด", Duration: 3 * time.Second},
-					{Name: "UPLOAD_FILE_COMPLETED", Description: "อัพโหลดเสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "PROCESS_DATA",
-				Description: "กำลังประมวลผลข้อมูล",
-				SubSteps: []JobSubStepConfig{
-					{Name: "PROCESS_DATA_PARSING", Description: "กำลังแปลงข้อมูล", Duration: 2 * time.Second},
-					{Name: "PROCESS_DATA_IMPORTING", Description: "กำลังนำเข้าข้อมูล", Duration: 3 * time.Second},
-					{Name: "PROCESS_DATA_COMPLETED", Description: "ประมวลผลเสร็จสิ้น", Duration: 0},
-				},
-			},
-		},
-	}
-}
-
-// NewReportGenerationProcess creates a report generation job configuration
-func NewReportGenerationProcess() *JobProcessConfig {
-	return &JobProcessConfig{
-		ProcessName: "Report Generation",
-		Steps: []JobStepConfig{
-			{
-				Name:        "COLLECT_DATA",
-				Description: "กำลังรวบรวมข้อมูล",
-				SubSteps: []JobSubStepConfig{
-					{Name: "COLLECT_DATA_QUERYING", Description: "กำลังค้นหาข้อมูล", Duration: 2 * time.Second},
-					{Name: "COLLECT_DATA_AGGREGATING", Description: "กำลังรวมข้อมูล", Duration: 3 * time.Second},
-					{Name: "COLLECT_DATA_COMPLETED", Description: "รวบรวมข้อมูลเสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "GENERATE_CHARTS",
-				Description: "กำลังสร้างกราฟ",
-				SubSteps: []JobSubStepConfig{
-					{Name: "GENERATE_CHARTS_CREATING", Description: "กำลังสร้างกราฟ", Duration: 2 * time.Second},
-					{Name: "GENERATE_CHARTS_STYLING", Description: "กำลังตกแต่งกราฟ", Duration: time.Second},
-					{Name: "GENERATE_CHARTS_COMPLETED", Description: "สร้างกราฟเสร็จสิ้น", Duration: 0},
-				},
-			},
-			{
-				Name:        "EXPORT_REPORT",
-				Description: "กำลังส่งออกรายงาน",
-				SubSteps: []JobSubStepConfig{
-					{Name: "EXPORT_REPORT_FORMATTING", Description: "กำลังจัดรูปแบบ", Duration: time.Second},
-					{Name: "EXPORT_REPORT_SAVING", Description: "กำลังบันทึกไฟล์", Duration: 2 * time.Second},
-					{Name: "EXPORT_REPORT_COMPLETED", Description: "ส่งออกรายงานเสร็จสิ้น", Duration: 0},
-				},
-			},
-		},
-	}
-}
-
-// ProcessManager provides easy-to-use methods for creating and managing job processes
-type ProcessManager struct {
-	currentProcess *JobProcessConfig
-}
-
-// NewProcessManager creates a new process manager
-func NewProcessManager() *ProcessManager {
-	return &ProcessManager{}
-}
-
-// UseProcess sets the process configuration to use
-func (pm *ProcessManager) UseProcess(processName string) *ProcessManager {
-	if config, exists := ProcessConfigurations[processName]; exists {
-		pm.currentProcess = config
-	} else {
-		// Default to data_analysis if not found
-		pm.currentProcess = ProcessConfigurations["data_analysis"]
-	}
-	return pm
-}
-
-// CreateCustomProcess allows creating a completely custom process
-func (pm *ProcessManager) CreateCustomProcess(name string) *ProcessBuilder {
-	return &ProcessBuilder{
-		config: &JobProcessConfig{
-			ProcessName: name,
-			Steps:       []JobStepConfig{},
-		},
-		manager: pm,
-	}
-}
-
-// GetSteps returns the current process steps (for backward compatibility)
-func (pm *ProcessManager) GetSteps() []string {
-	if pm.currentProcess == nil {
-		return []string{}
-	}
-
-	steps := make([]string, len(pm.currentProcess.Steps))
-	for i, step := range pm.currentProcess.Steps {
-		steps[i] = step.Name
-	}
-	return steps
-}
-
-// GetSubCheckpoints returns sub-checkpoints for a step (for backward compatibility)
-func (pm *ProcessManager) GetSubCheckpoints() map[string][]string {
-	if pm.currentProcess == nil {
-		return map[string][]string{}
-	}
-
-	checkpoints := make(map[string][]string)
-	for _, step := range pm.currentProcess.Steps {
-		subSteps := make([]string, len(step.SubSteps))
-		for i, subStep := range step.SubSteps {
-			subSteps[i] = subStep.Name
-		}
-		checkpoints[step.Name] = subSteps
-	}
-	return checkpoints
-}
-
-// GetStepDescriptions returns step descriptions (for backward compatibility)
-func (pm *ProcessManager) GetStepDescriptions() map[string]string {
-	if pm.currentProcess == nil {
-		return map[string]string{"COMPLETED": "งานเสร็จสิ้นแล้ว"}
-	}
-
-	descriptions := make(map[string]string)
-
-	// Add main step descriptions
-	for _, step := range pm.currentProcess.Steps {
-		descriptions[step.Name] = step.Description
-
-		// Add sub-step descriptions
-		for _, subStep := range step.SubSteps {
-			descriptions[subStep.Name] = subStep.Description
-		}
-	}
-
-	// Add special states
-	descriptions["COMPLETED"] = "งานเสร็จสิ้นแล้ว"
-
-	return descriptions
-}
-
-// GetCurrentProcessConfig returns the current process configuration for registration
-func (pm *ProcessManager) GetCurrentProcessConfig() *JobProcessConfig {
-	return pm.currentProcess
-}
-
-// ProcessBuilder provides a fluent interface for building custom processes
-type ProcessBuilder struct {
-	config  *JobProcessConfig
-	manager *ProcessManager
-}
-
-// AddStep adds a step to the process
-func (pb *ProcessBuilder) AddStep(name, description string) *StepBuilder {
-	step := JobStepConfig{
-		Name:        name,
-		Description: description,
-		SubSteps:    []JobSubStepConfig{},
-	}
-
-	pb.config.Steps = append(pb.config.Steps, step)
-
-	return &StepBuilder{
-		step:    &pb.config.Steps[len(pb.config.Steps)-1],
-		builder: pb,
-	}
-}
-
-// AddStepWithFunc adds a step with a custom execution function
-func (pb *ProcessBuilder) AddStepWithFunc(name, description string, executeFunc func(ctx context.Context, jobID string, step *JobStepConfig) error) *StepBuilder {
-	step := JobStepConfig{
-		Name:        name,
-		Description: description,
-		SubSteps:    []JobSubStepConfig{},
-		ExecuteFunc: executeFunc,
-	}
-
-	pb.config.Steps = append(pb.config.Steps, step)
-
-	return &StepBuilder{
-		step:    &pb.config.Steps[len(pb.config.Steps)-1],
-		builder: pb,
-	}
-}
-
-// Build completes the process building and returns the manager
-func (pb *ProcessBuilder) Build() *ProcessManager {
-	pb.manager.currentProcess = pb.config
-	return pb.manager
-}
-
-// StepBuilder provides a fluent interface for building steps
-type StepBuilder struct {
-	step    *JobStepConfig
-	builder *ProcessBuilder
-}
-
-// AddSubStep adds a sub-step to the current step
-func (sb *StepBuilder) AddSubStep(name, description string, duration time.Duration) *StepBuilder {
-	subStep := JobSubStepConfig{
-		Name:        name,
-		Description: description,
-		Duration:    duration,
-	}
-
-	sb.step.SubSteps = append(sb.step.SubSteps, subStep)
-	return sb
-}
-
-// AddSubStepWithAction adds a sub-step with a custom action function
-func (sb *StepBuilder) AddSubStepWithAction(name, description string, duration time.Duration, action func()) *StepBuilder {
-	subStep := JobSubStepConfig{
-		Name:        name,
-		Description: description,
-		Duration:    duration,
-		Action:      action,
-	}
-
-	sb.step.SubSteps = append(sb.step.SubSteps, subStep)
-	return sb
-}
-
-// SetExecuteFunc sets a custom execution function for the current step
-func (sb *StepBuilder) SetExecuteFunc(executeFunc func(ctx context.Context, jobID string, step *JobStepConfig) error) *StepBuilder {
-	sb.step.ExecuteFunc = executeFunc
-	return sb
-}
-
-// AddStep continues adding another step to the process
-func (sb *StepBuilder) AddStep(name, description string) *StepBuilder {
-	return sb.builder.AddStep(name, description)
-}
-
-// AddStepWithFunc continues adding another step with custom function to the process
-func (sb *StepBuilder) AddStepWithFunc(name, description string, executeFunc func(ctx context.Context, jobID string, step *JobStepConfig) error) *StepBuilder {
-	return sb.builder.AddStepWithFunc(name, description, executeFunc)
-}
-
-// Build completes the building process
-func (sb *StepBuilder) Build() *ProcessManager {
-	return sb.builder.Build()
-}
-
-// Global process manager instance (for backward compatibility)
-var DefaultProcessManager = NewProcessManager().UseProcess("data_analysis")
+// Use process manager from library
+var DefaultProcessManager = process.NewProcessManager().UseProcess("data_analysis")
 
 var JobSteps = DefaultProcessManager.GetSteps()
 var SubCheckpoints = DefaultProcessManager.GetSubCheckpoints()
@@ -396,8 +64,8 @@ type StepFunction func(h *TaskHandler, ctx context.Context, jobID string) error
 // getStepExecutor returns the appropriate step function for the given step name
 func getStepExecutor(stepName string) StepFunction {
 	// First, try to get from current process configuration
-	if DefaultProcessManager.currentProcess != nil {
-		for _, step := range DefaultProcessManager.currentProcess.Steps {
+	if currentConfig := DefaultProcessManager.GetCurrentProcessConfig(); currentConfig != nil {
+		for _, step := range currentConfig.Steps {
 			if step.Name == stepName {
 				if step.ExecuteFunc != nil {
 					return func(h *TaskHandler, ctx context.Context, jobID string) error {
@@ -495,9 +163,16 @@ func (h *TaskHandler) executeStepWithSubCheckpoints(ctx context.Context, jobID s
 
 	for i, action := range subStepActions {
 		if startSubIndex <= i {
-			// Save sub-checkpoint
-			if err := h.saveSubCheckpoint(ctx, jobID, stepName, subSteps[i]); err != nil {
-				return err
+			// Save sub-checkpoint (with safety check)
+			if i < len(subSteps) {
+				if err := h.saveSubCheckpoint(ctx, jobID, stepName, subSteps[i]); err != nil {
+					return err
+				}
+			} else {
+				// Fallback: save step name as checkpoint for new processes
+				if err := h.saveSubCheckpoint(ctx, jobID, stepName, fmt.Sprintf("%s_substep_%d", stepName, i+1)); err != nil {
+					return err
+				}
 			}
 
 			// Execute the action
@@ -589,11 +264,36 @@ func NewAsynqJobQueue() ports.JobQueue {
 }
 
 func (q *asynqJobQueue) EnqueueAnalysis(jobID string) error {
-	payload, _ := json.Marshal(map[string]string{"job_id": jobID})
-	task := asynq.NewTask(TaskTypeAnalysis, payload)
+	// Backward compatibility - default to data_analysis
+	return q.EnqueueForProcess(jobID, "data_analysis")
+}
+
+func (q *asynqJobQueue) EnqueueForProcess(jobID string, processType string) error {
+	payload, _ := json.Marshal(map[string]string{
+		"job_id":       jobID,
+		"process_type": processType,
+	})
+
+	// Get process-specific task type
+	taskType := getTaskTypeForProcess(processType)
+	task := asynq.NewTask(taskType, payload)
 	_, err := q.client.Enqueue(task)
 
 	return err
+}
+
+// getTaskTypeForProcess returns the appropriate task type for a process
+func getTaskTypeForProcess(processType string) string {
+	switch processType {
+	case "data_analysis":
+		return TaskTypeDataAnalysis
+	case "file_import":
+		return TaskTypeFileImport
+	case "report_gen":
+		return TaskTypeReportGen
+	default:
+		return TaskTypeAnalysis // fallback
+	}
 }
 
 // --- 2. Asynq Task Handlers (Worker Logic)
@@ -604,6 +304,33 @@ type TaskHandler struct {
 
 func NewTaskHandler(repo ports.JobRepository, notifier ports.Notifier) *TaskHandler {
 	return &TaskHandler{repo: repo, notifier: notifier}
+}
+
+// ExecuteGenericStep is exported version for testing
+func (h *TaskHandler) ExecuteGenericStep(ctx context.Context, jobID string, stepConfig *JobStepConfig) error {
+	return h.executeGenericStep(ctx, jobID, stepConfig)
+}
+
+// executeGenericStep executes a generic step using process configuration
+func (h *TaskHandler) executeGenericStep(ctx context.Context, jobID string, stepConfig *JobStepConfig) error {
+	if len(stepConfig.SubSteps) == 0 {
+		// No sub-steps, execute simple processing
+		log.Printf("Job %s: Processing %s...", jobID, stepConfig.Description)
+		time.Sleep(StepProcessingTime)
+		return nil
+	}
+
+	// Execute with sub-steps
+	actions := make([]func(), len(stepConfig.SubSteps))
+	for i, subStep := range stepConfig.SubSteps {
+		subStepDesc := subStep.Description
+		actions[i] = func() {
+			log.Printf("Job %s: %s", jobID, subStepDesc)
+			time.Sleep(StepProcessingTime / time.Duration(len(stepConfig.SubSteps)))
+		}
+	}
+
+	return h.executeStepWithSubCheckpoints(ctx, jobID, stepConfig.Name, actions)
 }
 
 // Step execution functions - each step simulates specific work with sub-checkpoints
@@ -749,29 +476,6 @@ func (h *TaskHandler) executeGeneratingReport(ctx context.Context, jobID string)
 	}
 
 	return h.executeStepWithSubCheckpoints(ctx, jobID, stepName, actions)
-}
-
-// executeGenericStep executes a step using its configuration
-func (h *TaskHandler) executeGenericStep(ctx context.Context, jobID string, step *JobStepConfig) error {
-	// Create actions from sub-step configurations
-	actions := make([]func(), len(step.SubSteps))
-
-	for i, subStep := range step.SubSteps {
-		subStep := subStep // capture loop variable
-		actions[i] = func() {
-			if subStep.Action != nil {
-				subStep.Action()
-			} else {
-				// Default action: log and sleep
-				log.Printf("Job %s: %s", jobID, subStep.Description)
-				if subStep.Duration > 0 {
-					time.Sleep(subStep.Duration)
-				}
-			}
-		}
-	}
-
-	return h.executeStepWithSubCheckpoints(ctx, jobID, step.Name, actions)
 }
 
 // HandleAnalysisTask คือ Worker ที่ทำงานจริง

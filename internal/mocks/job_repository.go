@@ -34,6 +34,21 @@ func (m *MockJobRepository) FindAll(ctx context.Context) ([]*domain.Job, error) 
 	return args.Get(0).([]*domain.Job), args.Error(1)
 }
 
+func (m *MockJobRepository) FindByProcessType(ctx context.Context, processType string) ([]*domain.Job, error) {
+	args := m.Called(ctx, processType)
+	return args.Get(0).([]*domain.Job), args.Error(1)
+}
+
+func (m *MockJobRepository) FindByProcessAndStatus(ctx context.Context, processType string, status domain.JobStatus) ([]*domain.Job, error) {
+	args := m.Called(ctx, processType, status)
+	return args.Get(0).([]*domain.Job), args.Error(1)
+}
+
+func (m *MockJobRepository) CountByProcess(ctx context.Context, processType string) (int, error) {
+	args := m.Called(ctx, processType)
+	return args.Int(0), args.Error(1)
+}
+
 // NewMockJobRepository creates a new mock repository instance
 func NewMockJobRepository() *MockJobRepository {
 	return new(MockJobRepository)

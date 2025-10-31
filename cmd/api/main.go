@@ -54,7 +54,7 @@ func main() {
 	// --- 2. Initialize Core Service (Inject Adapters) ---
 	jobService := service.NewJobService(jobRepo, JobQueue, notifier)
 
-	// --- 3. Initialize Asynq Worker (Server) ---
+	// --- 3. Initialize Asynq Worker (Multi-Process) ---
 	// Worker จะต้องใช้ Repo และ Notifier ตัวเดียวกับ API
 	asynqServer := asynq.NewServer(
 		asynq.RedisClientOpt{Addr: queue.RedisAddr},
@@ -67,9 +67,25 @@ func main() {
 		},
 	)
 
-	taskHandler := queue.NewTaskHandler(jobRepo, notifier)
+	// Create process-specific task handlers
+	dataAnalysisHandler := queue.NewProcessTaskHandler(jobRepo, notifier, "data_analysis")
+	fileImportHandler := queue.NewProcessTaskHandler(jobRepo, notifier, "file_import")
+	reportGenHandler := queue.NewProcessTaskHandler(jobRepo, notifier, "report_gen")
+
+	// Register all process handlers
 	mux := asynq.NewServeMux()
+	mux.HandleFunc(queue.TaskTypeDataAnalysis, dataAnalysisHandler.HandleAnalysisTask)
+	mux.HandleFunc(queue.TaskTypeFileImport, fileImportHandler.HandleAnalysisTask)
+	mux.HandleFunc(queue.TaskTypeReportGen, reportGenHandler.HandleAnalysisTask)
+
+	// Keep backward compatibility
+	taskHandler := queue.NewTaskHandler(jobRepo, notifier)
 	mux.HandleFunc(queue.TaskTypeAnalysis, taskHandler.HandleAnalysisTask)
+
+	log.Println("✅ Registered Multi-Process Task Handlers:")
+	log.Println("   - Data Analysis: task:data_analysis")
+	log.Println("   - File Import: task:file_import")
+	log.Println("   - Report Generation: task:report_gen")
 
 	// TODO: เพิ่ม Recovery goroutine สำหรับ Production environment
 	// สำหรับ Development - Asynq มี built-in retry เพียงพอแล้ว
