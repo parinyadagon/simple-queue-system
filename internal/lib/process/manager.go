@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -26,15 +27,35 @@ func (pm *ProcessManager) UseProcess(processName string) *ProcessManager {
 	return pm
 }
 
-// CreateCustomProcess allows creating a completely custom process
+// CreateCustomProcess allows creating a completely custom process with optimizations
 func (pm *ProcessManager) CreateCustomProcess(name string) *ProcessBuilder {
-	return &ProcessBuilder{
-		config: &JobProcessConfig{
-			ProcessName: name,
-			Steps:       []JobStepConfig{},
-		},
-		manager: pm,
-	}
+	return getProcessBuilder(name, pm)
+}
+
+// CreateCustomProcessWithCapacity creates a process with pre-allocated capacity
+func (pm *ProcessManager) CreateCustomProcessWithCapacity(name string, stepsCapacity int) *ProcessBuilder {
+	return getProcessBuilderWithCapacity(name, pm, stepsCapacity)
+}
+
+// Object pool for ProcessBuilder to reduce allocations
+var processBuilderPool = sync.Pool{
+	New: func() interface{} {
+		return &ProcessBuilder{}
+	},
+}
+
+// getProcessBuilder returns an optimized ProcessBuilder from pool
+func getProcessBuilder(name string, pm *ProcessManager) *ProcessBuilder {
+	pb := processBuilderPool.Get().(*ProcessBuilder)
+	pb.reset(name, pm, 4) // Default capacity of 4 steps
+	return pb
+}
+
+// getProcessBuilderWithCapacity returns a ProcessBuilder with specific capacity
+func getProcessBuilderWithCapacity(name string, pm *ProcessManager, capacity int) *ProcessBuilder {
+	pb := processBuilderPool.Get().(*ProcessBuilder)
+	pb.reset(name, pm, capacity)
+	return pb
 }
 
 // GetSteps returns the current process steps (for backward compatibility)
@@ -96,48 +117,114 @@ func (pm *ProcessManager) GetCurrentProcessConfig() *JobProcessConfig {
 	return pm.currentProcess
 }
 
-// ProcessBuilder provides a fluent interface for building custom processes
+// ProcessBuilder provides a high-performance fluent interface for building custom processes
 type ProcessBuilder struct {
-	config  *JobProcessConfig
-	manager *ProcessManager
+	config      *JobProcessConfig
+	manager     *ProcessManager
+	stepBuilder *StepBuilder // Reused step builder to reduce allocations
 }
 
-// AddStep adds a step to the process
+// reset resets the ProcessBuilder for reuse (object pooling)
+func (pb *ProcessBuilder) reset(name string, pm *ProcessManager, stepsCapacity int) {
+	if pb.config == nil {
+		pb.config = &JobProcessConfig{}
+	}
+	pb.config.ProcessName = name
+	// Pre-allocate with capacity to avoid multiple reallocations
+	if cap(pb.config.Steps) < stepsCapacity {
+		pb.config.Steps = make([]JobStepConfig, 0, stepsCapacity)
+	} else {
+		pb.config.Steps = pb.config.Steps[:0] // Reset slice but keep capacity
+	}
+	pb.manager = pm
+
+	// Reuse step builder
+	if pb.stepBuilder == nil {
+		pb.stepBuilder = &StepBuilder{}
+	}
+}
+
+// release returns the ProcessBuilder to the pool
+func (pb *ProcessBuilder) release() {
+	// Clear references to prevent memory leaks
+	pb.config = nil
+	pb.manager = nil
+	if pb.stepBuilder != nil {
+		pb.stepBuilder.step = nil
+		pb.stepBuilder.builder = nil
+	}
+	processBuilderPool.Put(pb)
+}
+
+// AddStep adds a step to the process with optimizations
 func (pb *ProcessBuilder) AddStep(name, description string) *StepBuilder {
 	step := JobStepConfig{
 		Name:        name,
 		Description: description,
-		SubSteps:    []JobSubStepConfig{},
+		SubSteps:    make([]JobSubStepConfig, 0, 4), // Pre-allocate for typical 4 sub-steps
 	}
 
 	pb.config.Steps = append(pb.config.Steps, step)
 
-	return &StepBuilder{
-		step:    &pb.config.Steps[len(pb.config.Steps)-1],
-		builder: pb,
-	}
+	// Reuse step builder
+	pb.stepBuilder.step = &pb.config.Steps[len(pb.config.Steps)-1]
+	pb.stepBuilder.builder = pb
+	return pb.stepBuilder
 }
 
-// AddStepWithFunc adds a step with a custom execution function
+// AddStepWithFunc adds a step with a custom execution function (optimized)
 func (pb *ProcessBuilder) AddStepWithFunc(name, description string, executeFunc func(ctx context.Context, jobID string, step *JobStepConfig) error) *StepBuilder {
 	step := JobStepConfig{
 		Name:        name,
 		Description: description,
-		SubSteps:    []JobSubStepConfig{},
+		SubSteps:    make([]JobSubStepConfig, 0, 4), // Pre-allocate
 		ExecuteFunc: executeFunc,
 	}
 
 	pb.config.Steps = append(pb.config.Steps, step)
 
-	return &StepBuilder{
-		step:    &pb.config.Steps[len(pb.config.Steps)-1],
-		builder: pb,
-	}
+	// Reuse step builder
+	pb.stepBuilder.step = &pb.config.Steps[len(pb.config.Steps)-1]
+	pb.stepBuilder.builder = pb
+	return pb.stepBuilder
 }
 
-// Build completes the process building and returns the manager
+// Build completes the process building and returns the manager (with cleanup)
 func (pb *ProcessBuilder) Build() *ProcessManager {
 	pb.manager.currentProcess = pb.config
+
+	// Make a copy of the config to prevent issues after release
+	config := &JobProcessConfig{
+		ProcessName: pb.config.ProcessName,
+		Steps:       make([]JobStepConfig, len(pb.config.Steps)),
+	}
+	copy(config.Steps, pb.config.Steps)
+	pb.manager.currentProcess = config
+
+	// Return builder to pool for reuse
+	pb.release()
+
+	return pb.manager
+}
+
+// BuildAndRegister builds the process and registers it in ProcessConfigurations
+func (pb *ProcessBuilder) BuildAndRegister(processKey string) *ProcessManager {
+	pb.manager.currentProcess = pb.config
+
+	// Make a copy for registration
+	config := &JobProcessConfig{
+		ProcessName: pb.config.ProcessName,
+		Steps:       make([]JobStepConfig, len(pb.config.Steps)),
+	}
+	copy(config.Steps, pb.config.Steps)
+
+	// Register in global configurations
+	ProcessConfigurations[processKey] = config
+	pb.manager.currentProcess = config
+
+	// Return builder to pool
+	pb.release()
+
 	return pb.manager
 }
 
@@ -191,4 +278,9 @@ func (sb *StepBuilder) AddStepWithFunc(name, description string, executeFunc fun
 // Build completes the building process
 func (sb *StepBuilder) Build() *ProcessManager {
 	return sb.builder.Build()
+}
+
+// BuildAndRegister completes the building process and registers the process
+func (sb *StepBuilder) BuildAndRegister(processKey string) *ProcessManager {
+	return sb.builder.BuildAndRegister(processKey)
 }

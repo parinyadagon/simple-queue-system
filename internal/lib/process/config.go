@@ -18,7 +18,7 @@ type JobSubStepConfig struct {
 	Name        string        `json:"name"`
 	Description string        `json:"description"`
 	Duration    time.Duration `json:"duration"`
-	Action      func()        `json:"-"`
+	Action      func()        `json:"-"` // Optional custom action for this sub-step
 }
 
 // JobProcessConfig defines the entire job process configuration
