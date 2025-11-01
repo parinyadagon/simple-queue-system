@@ -316,15 +316,22 @@ func (h *ProcessTaskHandler) saveProcessSubCheckpoint(ctx context.Context, jobID
 		return nil
 	}
 
-	// Get human-readable step description from process config
-	stepDescription := h.getProcessStepDescription(subCheckpoint)
-	if stepDescription == "" {
-		stepDescription = subCheckpoint // Fallback to checkpoint name
+	// Get human-readable step descriptions from process config
+	mainStepDescription := h.getProcessStepDescription(mainStep)
+	if mainStepDescription == "" {
+		mainStepDescription = mainStep // Fallback to main step name
 	}
 
-	log.Printf("📋 ProcessTaskHandler[%s]: Job %s - Sub-checkpoint: %s (%s)", h.processType, jobID, subCheckpoint, stepDescription)
+	subStepDescription := h.getProcessStepDescription(subCheckpoint)
+	if subStepDescription == "" {
+		subStepDescription = subCheckpoint // Fallback to checkpoint name
+	}
+
+	log.Printf("📋 ProcessTaskHandler[%s]: Job %s - Sub-checkpoint: %s (%s)", h.processType, jobID, subCheckpoint, subStepDescription)
 	job.CurrentCheckpoint = subCheckpoint
-	job.CurrentStepName = stepDescription
+	job.CurrentStepName = subStepDescription
+	job.CurrentMainStep = mainStepDescription // Set main step
+	job.CurrentSubStep = subStepDescription   // Set sub step
 	job.Progress = h.calculateProcessProgress(subCheckpoint, len(h.processConfig.Steps))
 
 	if err := h.repo.Save(ctx, job); err != nil {
@@ -450,6 +457,8 @@ func (h *ProcessTaskHandler) saveProcessStepProgress(ctx context.Context, jobID 
 
 	job.CurrentCheckpoint = stepName
 	job.CurrentStepName = stepDescription
+	job.CurrentMainStep = stepDescription // Main step is the same as current step
+	job.CurrentSubStep = ""               // Clear sub step when saving main step
 	job.Progress = h.calculateProcessProgress(stepName, totalSteps)
 
 	if err := h.repo.Save(ctx, job); err != nil {
@@ -531,6 +540,8 @@ func (h *ProcessTaskHandler) completeJob(ctx context.Context, jobID string, canc
 	// Mark job as completed
 	finalJob.CurrentCheckpoint = CompletedCheckpoint
 	finalJob.CurrentStepName = "งานเสร็จสิ้นแล้ว"
+	finalJob.CurrentMainStep = "เสร็จสิ้น"
+	finalJob.CurrentSubStep = "งานเสร็จสมบูรณ์"
 	finalJob.Status = domain.StatusCompleted
 	finalJob.Progress = 100
 

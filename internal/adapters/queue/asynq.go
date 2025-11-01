@@ -105,15 +105,22 @@ func (h *TaskHandler) saveSubCheckpoint(ctx context.Context, jobID string, mainS
 		return nil
 	}
 
-	// Get human-readable step description
-	stepDescription, exists := StepDescriptions[subCheckpoint]
+	// Get human-readable step descriptions
+	mainStepDescription, exists := StepDescriptions[mainStep]
 	if !exists {
-		stepDescription = subCheckpoint // Fallback to checkpoint name
+		mainStepDescription = mainStep // Fallback to step name
 	}
 
-	log.Printf("Job %s: Sub-checkpoint: %s (%s)", jobID, subCheckpoint, stepDescription)
+	subStepDescription, exists := StepDescriptions[subCheckpoint]
+	if !exists {
+		subStepDescription = subCheckpoint // Fallback to checkpoint name
+	}
+
+	log.Printf("Job %s: Sub-checkpoint: %s (%s)", jobID, subCheckpoint, subStepDescription)
 	job.CurrentCheckpoint = subCheckpoint
-	job.CurrentStepName = stepDescription
+	job.CurrentStepName = subStepDescription
+	job.CurrentMainStep = mainStepDescription
+	job.CurrentSubStep = subStepDescription
 	job.Progress = h.calculateDetailedProgress(mainStep, subCheckpoint)
 
 	if err := h.repo.Save(ctx, job); err != nil {
@@ -585,6 +592,8 @@ func (h *TaskHandler) saveStepProgress(ctx context.Context, jobID string, stepNa
 	log.Printf("Job %s: Saving Checkpoint: %s (%s)", jobID, stepName, stepDescription)
 	job.CurrentCheckpoint = stepName
 	job.CurrentStepName = stepDescription
+	job.CurrentMainStep = stepDescription // Main step is the same as current step
+	job.CurrentSubStep = ""               // Clear sub step when saving main step
 	job.Progress = h.CalculateProgress(stepName, totalSteps)
 
 	if err := h.repo.Save(ctx, job); err != nil {
@@ -618,6 +627,8 @@ func (h *TaskHandler) completedJob(ctx context.Context, jobID string, cancel con
 	// Mark job as completed
 	finalJob.CurrentCheckpoint = CompletedCheckpoint
 	finalJob.CurrentStepName = StepDescriptions["COMPLETED"]
+	finalJob.CurrentMainStep = "เสร็จสิ้น"
+	finalJob.CurrentSubStep = "งานเสร็จสมบูรณ์"
 	finalJob.Status = domain.StatusCompleted
 	finalJob.Progress = 100
 

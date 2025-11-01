@@ -29,18 +29,73 @@ func NewSQLJobRepository(dataSourceName string) (ports.JobRepository, error) {
 
 	log.Println("Successfully connected to MySQL")
 
+	// Auto-create table and migrate if needed
+	if err := createOrMigrateJobsTable(db); err != nil {
+		log.Printf("Warning: Failed to create/migrate jobs table: %v", err)
+	}
+
 	return &mysqlJobRepository{db: db}, nil
+}
+
+// createOrMigrateJobsTable creates the jobs table with new columns or migrates existing table
+func createOrMigrateJobsTable(db *sqlx.DB) error {
+	// First, create the table if it doesn't exist
+	createTableQuery := `
+		CREATE TABLE IF NOT EXISTS jobs (
+			id VARCHAR(255) PRIMARY KEY,
+			process_type VARCHAR(100) DEFAULT 'data_analysis',
+			process_version VARCHAR(50) DEFAULT '1.0',
+			file_name VARCHAR(500),
+			status ENUM('PENDING', 'RUNNING', 'PAUSED', 'FAILED', 'CANCELED', 'COMPLETED') DEFAULT 'PENDING',
+			progress INT DEFAULT 0,
+			current_checkpoint VARCHAR(255) DEFAULT '',
+			current_step_name VARCHAR(500) DEFAULT '',
+			current_main_step VARCHAR(500) DEFAULT '',
+			current_sub_step VARCHAR(500) DEFAULT '',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+	`
+
+	if _, err := db.Exec(createTableQuery); err != nil {
+		return err
+	}
+
+	// Try to add new columns if they don't exist (safe migrations)
+	// Check if columns exist first, then add them
+	var columnExists int
+
+	// Check current_main_step column
+	err := db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'jobs' AND column_name = 'current_main_step'").Scan(&columnExists)
+	if err == nil && columnExists == 0 {
+		if _, err := db.Exec("ALTER TABLE jobs ADD COLUMN current_main_step VARCHAR(500) DEFAULT ''"); err != nil {
+			log.Printf("Warning: Failed to add current_main_step column: %v", err)
+		}
+	}
+
+	// Check current_sub_step column
+	err = db.QueryRow("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'jobs' AND column_name = 'current_sub_step'").Scan(&columnExists)
+	if err == nil && columnExists == 0 {
+		if _, err := db.Exec("ALTER TABLE jobs ADD COLUMN current_sub_step VARCHAR(500) DEFAULT ''"); err != nil {
+			log.Printf("Warning: Failed to add current_sub_step column: %v", err)
+		}
+	}
+
+	log.Println("✅ Jobs table created/migrated successfully")
+	return nil
 }
 
 // Save จะใช้ INSERT ... ON DUPLICATE KEY UPDATE (เรียกว่า "Upsert")
 func (r *mysqlJobRepository) Save(ctx context.Context, job *domain.Job) error {
 	query := `
-			INSERT INTO jobs (id, process_type, process_version, file_name, status, progress, current_checkpoint, current_step_name, created_at)
-			VALUES (:id, :process_type, :process_version, :file_name, :status, :progress, :current_checkpoint, :current_step_name, :created_at)
+			INSERT INTO jobs (id, process_type, process_version, file_name, status, progress, current_checkpoint, current_step_name, current_main_step, current_sub_step, created_at)
+			VALUES (:id, :process_type, :process_version, :file_name, :status, :progress, :current_checkpoint, :current_step_name, :current_main_step, :current_sub_step, :created_at)
 			ON DUPLICATE KEY UPDATE
 					status = VALUES(status),
 					current_checkpoint = VALUES(current_checkpoint),
 					current_step_name = VALUES(current_step_name),
+					current_main_step = VALUES(current_main_step),
+					current_sub_step = VALUES(current_sub_step),
 					progress = VALUES(progress)
 	`
 	// db.NameExeContext ใชั struct filed (ที่ tag `db:"..."`)

@@ -24,6 +24,8 @@ type Job struct {
 	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
 	CurrentCheckpoint string    `json:"current_checkpoint" db:"current_checkpoint"`
 	CurrentStepName   string    `json:"current_step_name" db:"current_step_name"`
+	CurrentMainStep   string    `json:"current_main_step" db:"current_main_step"` // NEW: Main step name
+	CurrentSubStep    string    `json:"current_sub_step" db:"current_sub_step"`   // NEW: Sub step name
 	// ใช้ context สำหรับการ cancel
 	// CancelFunc func() `json:"-"`
 }

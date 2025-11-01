@@ -10,6 +10,8 @@ interface Job {
   progress: number;
   created_at: string;
   current_step_name?: string;
+  current_main_step?: string; // NEW: Main step name
+  current_sub_step?: string; // NEW: Sub step name
 }
 
 // 2. Interface สำหรับ Process
@@ -383,13 +385,43 @@ function JobItem({ job, onControl, index }: JobItemProps) {
           {/* File Name */}
           <div className="text-xl font-semibold text-white">📄 {job.file_name}</div>
 
-          {/* Current Step Name */}
-          {job.current_step_name && (
-            <div className="flex items-center space-x-2 text-blue-300">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              <span className="text-sm font-medium">{job.current_step_name}</span>
+          {/* Enhanced Step Display - Main Step and Sub Step */}
+          {(job.current_main_step || job.current_sub_step || job.current_step_name) && (
+            <div className="space-y-2">
+              {/* Main Step */}
+              {job.current_main_step && (
+                <div className="flex items-center space-x-2 text-purple-300">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                    />
+                  </svg>
+                  <span className="text-sm font-semibold">Main: {job.current_main_step}</span>
+                </div>
+              )}
+
+              {/* Sub Step */}
+              {job.current_sub_step && (
+                <div className="flex items-center space-x-2 text-blue-300 ml-6">
+                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  <span className="text-sm font-medium">Sub: {job.current_sub_step}</span>
+                </div>
+              )}
+
+              {/* Fallback to current_step_name if new fields are not available */}
+              {!job.current_main_step && !job.current_sub_step && job.current_step_name && (
+                <div className="flex items-center space-x-2 text-blue-300">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                  </svg>
+                  <span className="text-sm font-medium">{job.current_step_name}</span>
+                </div>
+              )}
             </div>
           )}
 
