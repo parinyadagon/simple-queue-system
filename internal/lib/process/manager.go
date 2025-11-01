@@ -156,6 +156,12 @@ func (pb *ProcessBuilder) release() {
 	processBuilderPool.Put(pb)
 }
 
+// SetDescription sets the description for the process
+func (pb *ProcessBuilder) SetDescription(description string) *ProcessBuilder {
+	pb.config.Description = description
+	return pb
+}
+
 // AddStep adds a step to the process with optimizations
 func (pb *ProcessBuilder) AddStep(name, description string) *StepBuilder {
 	step := JobStepConfig{
@@ -214,6 +220,7 @@ func (pb *ProcessBuilder) BuildAndRegister(processKey string) *ProcessManager {
 	// Make a copy for registration
 	config := &JobProcessConfig{
 		ProcessName: pb.config.ProcessName,
+		Description: pb.config.Description,
 		Steps:       make([]JobStepConfig, len(pb.config.Steps)),
 	}
 	copy(config.Steps, pb.config.Steps)

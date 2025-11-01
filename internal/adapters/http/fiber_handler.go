@@ -4,6 +4,7 @@ import (
 	"simple-queue-103/internal/adapters/broadcast"
 	"simple-queue-103/internal/core/domain"
 	"simple-queue-103/internal/core/ports"
+	"simple-queue-103/internal/lib/process"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -98,28 +99,44 @@ func (h *fiberHandler) GetJob(c *fiber.Ctx) error {
 }
 
 func (h *fiberHandler) GetProcesses(c *fiber.Ctx) error {
-	processes := []map[string]interface{}{
-		{
-			"id":          "data_analysis",
-			"name":        "Data Analysis",
-			"description": "Comprehensive data analysis with ML models",
-			"steps":       6,
-		},
-		{
-			"id":          "file_import",
-			"name":        "File Import",
-			"description": "Import and process uploaded files",
-			"steps":       2,
-		},
-		{
-			"id":          "report_gen",
-			"name":        "Report Generation",
-			"description": "Generate charts and export reports",
-			"steps":       3,
-		},
+	// Get all registered processes dynamically from ProcessConfigurations
+	processes := make([]map[string]interface{}, 0, len(process.ProcessConfigurations))
+
+	for processID, config := range process.ProcessConfigurations {
+		// Use description from config, fallback to generated description if empty
+		description := config.Description
+		if description == "" {
+			description = h.generateProcessDescription(processID, config.ProcessName)
+		}
+
+		processes = append(processes, map[string]interface{}{
+			"id":          processID,
+			"name":        config.ProcessName,
+			"description": description,
+			"steps":       len(config.Steps),
+		})
 	}
 
 	return c.JSON(processes)
+}
+
+// generateProcessDescription creates appropriate descriptions for different process types
+func (h *fiberHandler) generateProcessDescription(processID, processName string) string {
+	descriptions := map[string]string{
+		"data_analysis":      "Comprehensive data analysis with ML models",
+		"file_import":        "Import and process uploaded files",
+		"report_gen":         "Generate charts and export reports",
+		"email_campaign_pro": "High-performance email campaign processing with optimized Builder Pattern",
+		"batch_processing":   "Optimized batch processing for large datasets with memory management",
+		"image_processing":   "Advanced image processing with memory optimization for large files",
+	}
+
+	if desc, exists := descriptions[processID]; exists {
+		return desc
+	}
+
+	// Default description for dynamic processes
+	return "Advanced " + processName + " process with production-ready optimizations"
 }
 
 func (h *fiberHandler) ControlJob(c *fiber.Ctx) error {

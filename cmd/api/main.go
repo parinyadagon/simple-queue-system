@@ -10,6 +10,7 @@ import (
 	"simple-queue-103/internal/adapters/repository"
 	"simple-queue-103/internal/core/ports"
 	"simple-queue-103/internal/core/service"
+	"simple-queue-103/internal/lib/process"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -18,10 +19,72 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// registerBuilderProcesses creates production-ready processes using optimized Builder Pattern
+func registerBuilderProcesses() {
+	log.Println("Registering Builder Pattern processes...")
+
+	manager := process.NewProcessManager()
+
+	// 1. Email Campaign Pro - High performance email processing
+	emailCampaign := manager.CreateCustomProcessWithCapacity("Email Campaign Pro", 4)
+	emailCampaign.SetDescription("High-performance email campaign processing with optimized Builder Pattern").
+		AddStep("validate_recipients", "ตรวจสอบผู้รับอีเมล").
+		AddSubStep("verify_email_format", "ตรวจสอบรูปแบบอีเมล", 5*time.Second).
+		AddSubStep("check_spam_filters", "ตรวจสอบตัวกรองสแปม", 3*time.Second).
+		AddStep("prepare_content", "เตรียมเนื้อหาอีเมล").
+		AddSubStep("load_templates", "โหลดเทมเพลต", 2*time.Second).
+		AddSubStep("personalize_content", "ปรับแต่งเนื้อหา", 4*time.Second).
+		AddStep("batch_sending", "ส่งอีเมลเป็นชุด").
+		AddSubStep("create_batches", "สร้างกลุ่มการส่ง", 3*time.Second).
+		AddSubStep("send_emails", "ส่งอีเมล", 8*time.Second).
+		AddStep("track_delivery", "ติดตามการส่ง").
+		AddSubStep("monitor_delivery", "ตรวจสอบสถานะการส่ง", 5*time.Second).
+		AddSubStep("handle_bounces", "จัดการอีเมลตีกลับ", 3*time.Second)
+
+	// Register with unique key
+	emailCampaign.BuildAndRegister("email_campaign_pro") // 2. Batch Processing - Optimized for large datasets
+	batchProcess := manager.CreateCustomProcessWithCapacity("Batch Processing", 3)
+	batchProcess.SetDescription("Optimized batch processing for large datasets with memory management").
+		AddStep("data_ingestion", "รับข้อมูลเข้าระบบ").
+		AddSubStep("validate_input", "ตรวจสอบข้อมูลนำเข้า", 4*time.Second).
+		AddSubStep("parse_format", "แยกวิเคราะห์รูปแบบข้อมูล", 6*time.Second).
+		AddStep("processing", "ประมวลผลข้อมูล").
+		AddSubStep("transform_data", "แปลงข้อมูล", 10*time.Second).
+		AddSubStep("apply_business_rules", "ใช้กฎทางธุรกิจ", 8*time.Second).
+		AddStep("quality_assurance", "ประกันคุณภาพ").
+		AddSubStep("validate_output", "ตรวจสอบข้อมูลผลลัพธ์", 5*time.Second).
+		AddSubStep("generate_report", "สร้างรายงานคุณภาพ", 4*time.Second)
+
+	batchProcess.BuildAndRegister("batch_processing")
+
+	// 3. Image Processing - Memory optimized for large files
+	imageProcess := manager.CreateCustomProcessWithCapacity("Image Processing", 3)
+	imageProcess.SetDescription("Advanced image processing with memory optimization for large files").
+		AddStep("image_analysis", "วิเคราะห์รูปภาพ").
+		AddSubStep("detect_format", "ตรวจจับรูปแบบภาพ", 2*time.Second).
+		AddSubStep("analyze_metadata", "วิเคราะห์ข้อมูลเมตา", 3*time.Second).
+		AddSubStep("check_dimensions", "ตรวจสอบขนาดภาพ", 1*time.Second).
+		AddStep("processing", "ประมวลผลรูปภาพ").
+		AddSubStep("resize_image", "ปรับขนาดรูปภาพ", 8*time.Second).
+		AddSubStep("apply_filters", "ใช้ตัวกรอง", 6*time.Second).
+		AddSubStep("optimize_quality", "ปรับปรุงคุณภาพ", 5*time.Second).
+		AddStep("output_generation", "สร้างไฟล์ผลลัพธ์").
+		AddSubStep("convert_format", "แปลงรูปแบบ", 4*time.Second).
+		AddSubStep("compress_file", "บีบอัดไฟล์", 3*time.Second).
+		AddSubStep("generate_thumbnails", "สร้างภาพขนาดย่อ", 2*time.Second)
+
+	imageProcess.BuildAndRegister("image_processing")
+
+	log.Printf("✅ Successfully registered %d Builder Pattern processes", 3)
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Failed to load .env file")
 	}
+
+	// Register production-ready Builder Pattern processes
+	registerBuilderProcesses()
 
 	// --- 1. Initialize Adapters (Singletons) ---
 
@@ -78,11 +141,31 @@ func main() {
 	mux.HandleFunc(queue.GetTaskTypeForProcess("file_import"), fileImportHandler.HandleAnalysisTask)
 	mux.HandleFunc(queue.GetTaskTypeForProcess("report_gen"), reportGenHandler.HandleAnalysisTask)
 
-	// Keep backward compatibility
-	taskHandler := queue.NewTaskHandler(jobRepo, notifier)
-	mux.HandleFunc(queue.TaskTypeAnalysis, taskHandler.HandleAnalysisTask)
+	// Register ALL processes from ProcessConfigurations (including Builder-created ones)
+	registeredProcesses := map[string]bool{} // Track registered processes
 
-	log.Println("✅ Registered Multi-Process Task Handlers:")
+	// First register the main processes
+	registeredProcesses["data_analysis"] = true
+	registeredProcesses["file_import"] = true
+	registeredProcesses["report_gen"] = true
+
+	// Then register any additional processes (Builder Pattern processes)
+	dynamicCount := 0
+	for processType := range queue.ProcessConfigurations {
+		if !registeredProcesses[processType] {
+			// Create handler for dynamic process
+			dynamicHandler := queue.NewProcessTaskHandler(jobRepo, notifier, processType)
+			mux.HandleFunc(queue.GetTaskTypeForProcess(processType), dynamicHandler.HandleAnalysisTask)
+			log.Printf("   - %s: %s", processType, queue.GetTaskTypeForProcess(processType))
+			dynamicCount++
+		}
+	}
+
+	if dynamicCount > 0 {
+		log.Printf("✅ Registered %d additional dynamic processes", dynamicCount)
+	}
+
+	log.Println("✅ Registered Process Task Handlers:")
 	log.Println("   - Data Analysis: task:data_analysis")
 	log.Println("   - File Import: task:file_import")
 	log.Println("   - Report Generation: task:report_gen")

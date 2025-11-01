@@ -17,6 +17,7 @@ func NewDataAnalysisProcess() *JobProcessConfig {
 
 	return &JobProcessConfig{
 		ProcessName: "Data Analysis",
+		Description: "Comprehensive data analysis with ML models",
 		Steps: []JobStepConfig{
 			{
 				Name:        "DOWNLOAD_SOURCE",
@@ -86,6 +87,7 @@ func NewDataAnalysisProcess() *JobProcessConfig {
 func NewFileImportProcess() *JobProcessConfig {
 	return &JobProcessConfig{
 		ProcessName: "File Import",
+		Description: "Import and process uploaded files",
 		Steps: []JobStepConfig{
 			{
 				Name:        "UPLOAD_FILE",
@@ -113,6 +115,7 @@ func NewFileImportProcess() *JobProcessConfig {
 func NewReportGenerationProcess() *JobProcessConfig {
 	return &JobProcessConfig{
 		ProcessName: "Report Generation",
+		Description: "Generate charts and export reports",
 		Steps: []JobStepConfig{
 			{
 				Name:        "COLLECT_DATA",

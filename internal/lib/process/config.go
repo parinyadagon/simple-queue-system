@@ -24,6 +24,7 @@ type JobSubStepConfig struct {
 // JobProcessConfig defines the entire job process configuration
 type JobProcessConfig struct {
 	ProcessName string          `json:"process_name"`
+	Description string          `json:"description"`
 	Steps       []JobStepConfig `json:"steps"`
 }
 
