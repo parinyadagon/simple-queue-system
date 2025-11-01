@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 )
@@ -253,13 +254,57 @@ func (sb *StepBuilder) AddSubStep(name, description string, duration time.Durati
 	return sb
 }
 
-// AddSubStepWithAction adds a sub-step with a custom action function
-func (sb *StepBuilder) AddSubStepWithAction(name, description string, duration time.Duration, action func()) *StepBuilder {
+// AddSubStepWithAction adds a sub-step with action that measures execution time during runtime
+func (sb *StepBuilder) AddSubStepWithAction(name, description string, action func()) *StepBuilder {
+	// Use a default duration estimate - will be updated with actual timing during execution
+	defaultDuration := 2 * time.Second
+
+	// Create action wrapper that measures execution time during actual runtime
+	timedAction := func() {
+		start := time.Now()
+
+		// Execute the action only once during actual runtime
+		action()
+
+		executionTime := time.Since(start)
+		log.Printf("📊 SubStep %s: execution time=%v", name, executionTime)
+
+		// Could store this timing for future optimization/learning
+		// (future enhancement: update duration estimates based on historical data)
+	}
+
 	subStep := JobSubStepConfig{
 		Name:        name,
 		Description: description,
-		Duration:    duration,
-		Action:      action,
+		Duration:    defaultDuration, // Use default duration for progress calculation
+		Action:      timedAction,     // Action runs only once during runtime
+	}
+
+	sb.step.SubSteps = append(sb.step.SubSteps, subStep)
+	return sb
+}
+
+// AddSubStepWithEstimatedAction adds a sub-step with user-provided estimated duration (for complex cases)
+func (sb *StepBuilder) AddSubStepWithEstimatedAction(name, description string, estimatedDuration time.Duration, action func()) *StepBuilder {
+	// Create a wrapper that measures actual execution time and compares with estimate
+	timedAction := func() {
+		start := time.Now()
+		action()
+		actualDuration := time.Since(start)
+
+		// Log timing comparison for optimization insights
+		if actualDuration > estimatedDuration {
+			log.Printf("⚠️ SubStep %s: slower than expected - estimated=%v, actual=%v", name, estimatedDuration, actualDuration)
+		} else {
+			log.Printf("✅ SubStep %s: estimated=%v, actual=%v", name, estimatedDuration, actualDuration)
+		}
+	}
+
+	subStep := JobSubStepConfig{
+		Name:        name,
+		Description: description,
+		Duration:    estimatedDuration, // Use estimated duration for progress calculation
+		Action:      timedAction,       // Wrapped action with timing measurement
 	}
 
 	sb.step.SubSteps = append(sb.step.SubSteps, subStep)

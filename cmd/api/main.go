@@ -42,7 +42,9 @@ func registerBuilderProcesses() {
 		AddSubStep("handle_bounces", "จัดการอีเมลตีกลับ", 3*time.Second)
 
 	// Register with unique key
-	emailCampaign.BuildAndRegister("email_campaign_pro") // 2. Batch Processing - Optimized for large datasets
+	emailCampaign.BuildAndRegister("email_campaign_pro")
+
+	// 2. Batch Processing - Optimized for large datasets
 	batchProcess := manager.CreateCustomProcessWithCapacity("Batch Processing", 3)
 	batchProcess.SetDescription("Optimized batch processing for large datasets with memory management").
 		AddStep("data_ingestion", "รับข้อมูลเข้าระบบ").
@@ -76,6 +78,29 @@ func registerBuilderProcesses() {
 	imageProcess.BuildAndRegister("image_processing")
 
 	log.Printf("✅ Successfully registered %d Builder Pattern processes", 3)
+
+	// 4. Database Process - Reliable DB operations with error handling
+	dbProcess := manager.CreateCustomProcessWithCapacity("Database Processing", 3)
+	dbProcess.SetDescription("Reliable database operations with error handling").
+		AddStep("connect_db", "เชื่อมต่อฐานข้อมูล").
+		AddSubStep("initialize_connection", "เริ่มต้นการเชื่อมต่อ", 2*time.Second).
+		AddSubStepWithAction("check_health", "ตรวจสอบสถานะ", func() {
+			// สมมติว่าเช็คสถานะ DB ที่นี่
+			log.Println("Checking database health...")
+
+			time.Sleep(10 * time.Second)
+
+			log.Println("Database is healthy.")
+
+		}).
+		AddStep("execute_query", "ดำเนินการคำสั่ง SQL").
+		AddSubStep("prepare_statement", "เตรียมคำสั่ง", 3*time.Second).
+		AddSubStep("handle_results", "จัดการผลลัพธ์", 4*time.Second).
+		AddStep("close_connection", "ปิดการเชื่อมต่อ").
+		AddSubStep("commit_transaction", "ยืนยันธุรกรรม", 2*time.Second).
+		AddSubStep("rollback_transaction", "ย้อนกลับธุรกรรม", 3*time.Second)
+
+	dbProcess.BuildAndRegister("database_processing")
 }
 
 func main() {
