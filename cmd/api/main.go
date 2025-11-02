@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"simple-queue-103/internal/adapters/broadcast"
 	"simple-queue-103/internal/adapters/http"
 	"simple-queue-103/internal/adapters/queue"
 	"simple-queue-103/internal/adapters/repository"
-	"simple-queue-103/internal/core/domain"
 	"simple-queue-103/internal/core/ports"
 	"simple-queue-103/internal/core/service"
 	"simple-queue-103/internal/lib/process"
@@ -20,79 +18,6 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/joho/godotenv"
 )
-
-// recoverStuckJobs จัดการ job ที่ค้างเมื่อ Redis ล้ม หรือ worker หยุดทำงาน
-func recoverStuckJobs(jobRepo ports.JobRepository, jobQueue ports.JobQueue, notifier ports.Notifier) error {
-	log.Println("🔍 Starting job recovery scan...")
-
-	// ค้นหา jobs ที่ค้างในสถานะ RUNNING เกิน 10 นาที
-	stuckJobs, err := findStuckRunningJobs(jobRepo)
-	if err != nil {
-		return fmt.Errorf("failed to find stuck jobs: %w", err)
-	}
-
-	if len(stuckJobs) == 0 {
-		log.Println("✅ No stuck jobs found")
-		return nil
-	}
-
-	log.Printf("🚨 Found %d stuck jobs, attempting recovery...", len(stuckJobs))
-
-	recoveredCount := 0
-	for _, job := range stuckJobs {
-		// ตรวจสอบว่า Redis กลับมาแล้วหรือยัง
-		if err := testRedisConnection(jobQueue); err != nil {
-			log.Printf("⚠️ Redis still down, cannot recover jobs: %v", err)
-			return err
-		}
-
-		// เปลี่ยนสถานะเป็น PENDING และ re-enqueue
-		job.Status = domain.StatusPending
-		if err := jobRepo.Save(context.Background(), job); err != nil {
-			log.Printf("❌ Failed to reset job %s: %v", job.ID, err)
-			continue
-		}
-
-		// Re-enqueue job กลับเข้าไปใน Redis
-		if err := jobQueue.EnqueueForProcess(job.ID, job.ProcessType); err != nil {
-			log.Printf("❌ Failed to re-enqueue job %s: %v", job.ID, err)
-			continue
-		}
-
-		log.Printf("🔄 Recovered stuck job: %s (%s)", job.ID, job.FileName)
-		notifier.BroadcastUpdate(job)
-		recoveredCount++
-	}
-
-	log.Printf("✅ Recovery completed: %d/%d jobs recovered", recoveredCount, len(stuckJobs))
-	return nil
-}
-
-// findStuckRunningJobs ค้นหา jobs ที่ค้างในสถานะ RUNNING นานเกิน 10 นาที
-func findStuckRunningJobs(jobRepo ports.JobRepository) ([]*domain.Job, error) {
-	allJobs, err := jobRepo.FindAll(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	var stuckJobs []*domain.Job
-	cutoffTime := time.Now().Add(-10 * time.Minute)
-
-	for _, job := range allJobs {
-		if job.Status == domain.StatusRunning && job.UpdatedAt.Before(cutoffTime) {
-			stuckJobs = append(stuckJobs, job)
-		}
-	}
-
-	return stuckJobs, nil
-}
-
-// testRedisConnection ทดสอบการเชื่อมต่อ Redis
-func testRedisConnection(jobQueue ports.JobQueue) error {
-	// สร้าง dummy job เพื่อทดสอบ
-	testJobID := fmt.Sprintf("test-%d", time.Now().Unix())
-	return jobQueue.EnqueueForProcess(testJobID, "test_connection")
-}
 
 // registerBuilderProcesses creates production-ready processes using optimized Builder Pattern
 func registerBuilderProcesses() {
@@ -271,6 +196,8 @@ func main() {
 	log.Println("   - Report Generation: task:report_gen")
 
 	// 🔥 Redis Recovery System - จัดการ job ที่ค้างเมื่อ Redis ล้ม
+	recoveryManager := queue.NewRecoveryManager(jobRepo, JobQueue, notifier)
+
 	go func() {
 		time.Sleep(10 * time.Second) // รอให้ระบบ start ก่อน
 
@@ -279,7 +206,7 @@ func main() {
 		defer ticker.Stop()
 
 		for range ticker.C {
-			if err := recoverStuckJobs(jobRepo, JobQueue, notifier); err != nil {
+			if err := recoveryManager.RecoverStuckJobs(); err != nil {
 				log.Printf("🚨 Recovery Error: %v", err)
 			}
 		}
